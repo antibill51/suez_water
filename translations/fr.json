@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "counter_id": "ID du compteur"
+        },
+        "data_description": {
+          "username": "Entrez votre identifiant associé à votre compte {tout_sur_mon_eau}",
+          "password": "Entrez votre mot de passe associé à votre compte {tout_sur_mon_eau}",
+          "counter_id": "Entrez l'ID de votre compteur (ex: 12345678). Il devrait être trouvé automatiquement lors de la configuration, sinon consultez la documentation de l'intégration pour plus d'informations"
+        },
+        "description": "Connectez votre compte Suez Water {tout_sur_mon_eau} pour récupérer votre consommation d'eau"
+      }
+    },
+    "error": {
+      "counter_not_found": "Impossible de trouver l'ID du compteur automatiquement. Veuillez consulter la documentation de l'intégration pour le trouver manuellement."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": { "placeholder": "Aucune option disponible" }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "water_usage_yesterday": {
+        "name": "Consommation d'eau de la veille"
+      },
+      "water_price": {
+        "name": "Prix de l'eau"
+      }
+    }
+  }
+}

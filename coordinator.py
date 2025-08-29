@@ -1,0 +1,255 @@
+"""Suez water update coordinator."""
+
+from dataclasses import dataclass
+from datetime import date, datetime
+import logging
+
+from pysuez import PySuezError, SuezClient, TelemetryMeasure
+
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.statistics import (
+    StatisticMeanType,
+    StatisticsRow,
+    async_add_external_statistics,
+    get_last_statistics,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CURRENCY_EURO,
+    UnitOfVolume,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+import homeassistant.util.dt as dt_util
+
+from .const import CONF_COUNTER_ID, DATA_REFRESH_INTERVAL, DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class SuezWaterAggregatedAttributes:
+    """Class containing aggregated sensor extra attributes."""
+
+    this_month_consumption: dict[str, float]
+    previous_month_consumption: dict[str, float]
+    last_year_overall: int
+    this_year_overall: int
+    history: dict[str, float]
+    highest_monthly_consumption: float
+
+
+@dataclass
+class SuezWaterData:
+    """Class used to hold all fetch data from suez api."""
+
+    aggregated_value: float | None
+    aggregated_attr: SuezWaterAggregatedAttributes | None
+    price: float | None
+
+
+type SuezWaterConfigEntry = ConfigEntry[SuezWaterCoordinator]
+
+
+class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
+    """Suez water coordinator."""
+
+    _suez_client: SuezClient
+    config_entry: SuezWaterConfigEntry
+
+    def __init__(self, hass: HomeAssistant, config_entry: SuezWaterConfigEntry) -> None:
+        """Initialize suez water coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=DATA_REFRESH_INTERVAL,
+            always_update=True,
+            config_entry=config_entry,
+        )
+        counter_id = self.config_entry.data[CONF_COUNTER_ID]
+        self._suez_client = SuezClient(
+            username=self.config_entry.data[CONF_USERNAME],
+            password=self.config_entry.data[CONF_PASSWORD],
+            counter_id=counter_id,
+        )
+        self._counter_id = counter_id
+        self._cost_statistic_id = f"{DOMAIN}:{self._counter_id}_water_cost_statistics"
+        self._water_statistic_id = (
+            f"{DOMAIN}:{self._counter_id}_water_consumption_statistics"
+        )
+
+    async def _async_update_data(self) -> SuezWaterData:
+        """Fetch data from API endpoint."""
+
+        def map_dict(param: dict[date, float]) -> dict[str, float]:
+            return {str(key): value for key, value in param.items()}
+
+        aggregated = None
+        try:
+            aggregated = await self._suez_client.fetch_aggregated_data()
+        except PySuezError as err:
+            # We assume here that a PySuezError during an update
+            # is likely due to an expired session or a changed password.
+            if "Authentication failed" in str(err):  # Adapt if the library has a specific error
+                raise ConfigEntryAuthFailed from err
+            _LOGGER.warning("Could not fetch aggregated data: %s", err)
+
+        price = None
+        try:
+            price = (await self._suez_client.get_price()).price
+        except PySuezError:
+            _LOGGER.warning("Failed to fetch water price. Cost statistics will not be updated.", exc_info=True)
+
+        try:
+            await self._update_statistics(price)
+        except PySuezError as err:
+            raise UpdateFailed("Failed to update suez water statistics") from err
+
+        aggregated_value = None
+        aggregated_attr = None
+        if aggregated:
+            _LOGGER.debug("Successfully fetched suez aggregated data")
+            aggregated_value = aggregated.value
+            aggregated_attr = SuezWaterAggregatedAttributes(
+                this_month_consumption=map_dict(aggregated.current_month),
+                previous_month_consumption=map_dict(aggregated.previous_month),
+                highest_monthly_consumption=aggregated.highest_monthly_consumption,
+                last_year_overall=aggregated.previous_year,
+                this_year_overall=aggregated.current_year,
+                history=map_dict(aggregated.history),
+            )
+
+        return SuezWaterData(
+            aggregated_value=aggregated_value,
+            aggregated_attr=aggregated_attr,
+            price=price,
+        )
+
+    async def _update_statistics(self, current_price: float | None) -> None:
+        """Update daily statistics."""
+        _LOGGER.debug("Updating statistics for %s", self._water_statistic_id)
+
+        water_last_stat = await self._get_last_stat(self._water_statistic_id)
+        if not water_last_stat:
+            # This is the first execution. We import all possible history.
+            # Using 'since=None' to fetch all available history from the API.
+            _LOGGER.info("First run: performing full history import.")
+            fetch_since = None
+            last_stats_date = None
+        else:
+            # Subsequent executions. We only retrieve data since the last reading.
+            last_stats_date = datetime.fromtimestamp(water_last_stat["start"]).date()
+            _LOGGER.debug("Incremental update since %s", last_stats_date)
+            fetch_since = last_stats_date
+
+        if not (usage := await self._suez_client.fetch_all_daily_data(since=fetch_since)):
+            _LOGGER.debug("No recent usage data. Skipping update")
+            return
+        _LOGGER.debug("fetched data: %s", len(usage))
+
+        consumption_statistics, cost_statistics = self._build_statistics(
+            current_price, usage, last_stats_date
+        )
+
+        self._persist_statistics(consumption_statistics, cost_statistics)
+
+    def _build_statistics(
+        self,
+        current_price: float | None,
+        usage: list[TelemetryMeasure],
+        last_stats_date: date | None,
+    ) -> tuple[list[StatisticData], list[StatisticData]]:
+        """Build statistics data from fetched data."""
+        consumption_statistics = []
+        cost_statistics = []
+
+        for data in usage:
+            # We ignore data without an index or volume, and during incremental updates,
+            # we ignore already recorded data.
+            if (
+                not data.index
+                or data.volume is None
+                or (last_stats_date and data.date <= last_stats_date)
+            ):
+                continue
+            consumption_date = dt_util.start_of_local_day(data.date)
+
+            # The sum corresponds to the real meter index.
+            consumption_statistics.append(
+                StatisticData(
+                    start=consumption_date,
+                    state=data.volume,
+                    sum=data.index,
+                )
+            )
+            if current_price is not None:
+                day_cost = (data.volume / 1000) * current_price
+                # The total cost is based on the total meter index.
+                total_cost = (data.index / 1000) * current_price
+                cost_statistics.append(
+                    StatisticData(
+                        start=consumption_date,
+                        state=day_cost,
+                        sum=total_cost,
+                    )
+                )
+
+        return consumption_statistics, cost_statistics
+
+    def _persist_statistics(
+        self,
+        consumption_statistics: list[StatisticData],
+        cost_statistics: list[StatisticData],
+    ) -> None:
+        """Persist given statistics in recorder."""
+        consumption_metadata = self._get_statistics_metadata(
+            id=self._water_statistic_id, name="Consumption", unit=UnitOfVolume.LITERS
+        )
+
+        _LOGGER.debug(
+            "Adding %s statistics for %s",
+            len(consumption_statistics),
+            self._water_statistic_id,
+        )
+        async_add_external_statistics(
+            self.hass, consumption_metadata, consumption_statistics
+        )
+
+        if len(cost_statistics) > 0:
+            _LOGGER.debug(
+                "Adding %s statistics for %s",
+                len(cost_statistics),
+                self._cost_statistic_id,
+            )
+            cost_metadata = self._get_statistics_metadata(
+                id=self._cost_statistic_id, name="Cost", unit=CURRENCY_EURO
+            )
+            async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
+
+        _LOGGER.debug("Updated statistics for %s", self._water_statistic_id)
+
+    def _get_statistics_metadata(
+        self, id: str, name: str, unit: str
+    ) -> StatisticMetaData:
+        """Build statistics metadata for requested configuration."""
+        return StatisticMetaData(
+            has_mean=False,
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name=f"Suez Water {name} {self._counter_id}",
+            source=DOMAIN,
+            statistic_id=id,
+            unit_of_measurement=unit,
+        )
+
+    async def _get_last_stat(self, id: str) -> StatisticsRow | None:
+        """Find last registered statistics of given id."""
+        last_stat = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, id, True, {"sum"}
+        )
+        return last_stat[id][0] if last_stat else None
