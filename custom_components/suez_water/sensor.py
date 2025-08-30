@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from pysuez.const import ATTRIBUTION
@@ -12,6 +12,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.const import CURRENCY_EURO, UnitOfVolume
 from homeassistant.core import HomeAssistant
@@ -37,10 +38,24 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         translation_key="water_usage_yesterday",
         native_unit_of_measurement=UnitOfVolume.LITERS,
         device_class=SensorDeviceClass.WATER,
-        value_fn=lambda suez_data: suez_data.aggregated_value,
-        attr_fn=lambda suez_data: (
-            asdict(suez_data.aggregated_attr) if suez_data.aggregated_attr else None
-        ),
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_fn=lambda suez_data: suez_data.yesterday_consumption,
+        attr_fn=lambda suez_data: {
+            "last_index": f"{suez_data.last_index / 1000:.3f} m³"
+            if suez_data.last_index is not None
+            else None,
+            "last_index_date": suez_data.last_index_date.isoformat()
+            if suez_data.last_index_date
+            else None,
+        },
+        entity_registry_enabled_default=True,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="last_update_attempt",
+        translation_key="last_update_attempt",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda suez_data: suez_data.last_update_attempt,
         entity_registry_enabled_default=False,
     ),
     SuezWaterSensorEntityDescription(
@@ -48,6 +63,7 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         translation_key="water_price",
         native_unit_of_measurement=f"{CURRENCY_EURO}/{UnitOfVolume.CUBIC_METERS}",
         device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda suez_data: suez_data.price,
     ),
 )

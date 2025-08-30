@@ -29,6 +29,9 @@
       "water_usage_yesterday": {
         "name": "Consommation d'eau de la veille"
       },
+      "last_update_attempt": {
+        "name": "Dernière tentative de mise à jour"
+      },
       "water_price": {
         "name": "Prix de l'eau"
       }

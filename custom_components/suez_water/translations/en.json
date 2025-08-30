@@ -29,6 +29,9 @@
       "water_usage_yesterday": {
         "name": "Water usage yesterday"
       },
+      "last_update_attempt": {
+        "name": "Last update attempt"
+      },
       "water_price": {
         "name": "Water price"
       }

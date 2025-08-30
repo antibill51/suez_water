@@ -1,7 +1,7 @@
 """Suez water update coordinator."""
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import logging
 
 from pysuez import PySuezError, SuezClient, TelemetryMeasure
@@ -26,7 +26,12 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.util.dt as dt_util
 
-from .const import CONF_COUNTER_ID, DATA_REFRESH_INTERVAL, DOMAIN
+from .const import (
+    CONF_COUNTER_ID,
+    DATA_REFRESH_INTERVAL,
+    DOMAIN,
+    FAST_DATA_REFRESH_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +55,10 @@ class SuezWaterData:
     aggregated_value: float | None
     aggregated_attr: SuezWaterAggregatedAttributes | None
     price: float | None
+    yesterday_consumption: float | None
+    last_index: float | None
+    last_index_date: date | None
+    last_update_attempt: datetime | None
 
 
 type SuezWaterConfigEntry = ConfigEntry[SuezWaterCoordinator]
@@ -85,31 +94,60 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
 
     async def _async_update_data(self) -> SuezWaterData:
         """Fetch data from API endpoint."""
-
+        last_update_attempt_dt = dt_util.now()
         def map_dict(param: dict[date, float]) -> dict[str, float]:
             return {str(key): value for key, value in param.items()}
 
+        # 1. Fetch all data from Suez API
         aggregated = None
         try:
             aggregated = await self._suez_client.fetch_aggregated_data()
         except PySuezError as err:
-            # We assume here that a PySuezError during an update
-            # is likely due to an expired session or a changed password.
-            if "Authentication failed" in str(err):  # Adapt if the library has a specific error
+            if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
             _LOGGER.warning("Could not fetch aggregated data: %s", err)
 
         price = None
         try:
             price = (await self._suez_client.get_price()).price
-        except PySuezError:
-            _LOGGER.warning("Failed to fetch water price. Cost statistics will not be updated.", exc_info=True)
+        except PySuezError as err:
+            if "Authentication failed" in str(err):
+                raise ConfigEntryAuthFailed from err
+            _LOGGER.warning(
+                "Failed to fetch water price. Cost statistics will not be updated.",
+                exc_info=True,
+            )
+
+        water_last_stat = await self._get_last_stat(self._water_statistic_id)
+        if not water_last_stat:
+            _LOGGER.info("First run: performing full history import.")
+            fetch_since = None
+            last_stats_date = None
+        else:
+            last_stats_date = datetime.fromtimestamp(water_last_stat["start"]).date()
+            _LOGGER.debug("Incremental update since %s", last_stats_date)
+            fetch_since = last_stats_date
 
         try:
-            await self._update_statistics(price)
+            daily_usage = await self._suez_client.fetch_all_daily_data(
+                since=fetch_since
+            )
         except PySuezError as err:
-            raise UpdateFailed("Failed to update suez water statistics") from err
+            if "Authentication failed" in str(err):
+                raise ConfigEntryAuthFailed from err
+            # Keep original behavior: fail update if daily data fails
+            raise UpdateFailed("Failed to fetch daily suez water data") from err
 
+        # 2. Update statistics
+        if not daily_usage:
+            _LOGGER.debug("No recent usage data. Skipping statistics update")
+        else:
+            try:
+                await self._update_statistics(price, daily_usage, last_stats_date)
+            except Exception as err:
+                raise UpdateFailed("Failed to update suez water statistics") from err
+
+        # 3. Prepare data for sensors
         aggregated_value = None
         aggregated_attr = None
         if aggregated:
@@ -124,33 +162,76 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 history=map_dict(aggregated.history),
             )
 
+        yesterday_consumption = None
+        last_index = None
+        last_index_date = None
+        yesterday_data_available = False
+
+        if daily_usage:
+            # Find the latest measure that has an actual index value
+            measures_with_index = [m for m in daily_usage if m.index is not None]
+            if measures_with_index:
+                measures_with_index.sort(key=lambda x: x.date)
+                latest_measure_with_index = measures_with_index[-1]
+                last_index = latest_measure_with_index.index
+                last_index_date = latest_measure_with_index.date
+
+            # Check for yesterday's data and calculate consumption
+            today = dt_util.now().date()
+            yesterday_dt = today - timedelta(days=1)
+            day_before_yesterday_dt = today - timedelta(days=2)
+
+            yesterday_measure = next(
+                (m for m in daily_usage if m.date == yesterday_dt), None
+            )
+            day_before_yesterday_measure = next(
+                (m for m in daily_usage if m.date == day_before_yesterday_dt),
+                None,
+            )
+
+            if yesterday_measure and yesterday_measure.index is not None:
+                yesterday_data_available = True
+                if (
+                    day_before_yesterday_measure
+                    and day_before_yesterday_measure.index is not None
+                ):
+                    yesterday_consumption = (
+                        yesterday_measure.index - day_before_yesterday_measure.index
+                    )
+
+        # 4. Dynamically adjust update interval
+        if not yesterday_data_available:
+            if self.update_interval != FAST_DATA_REFRESH_INTERVAL:
+                _LOGGER.info(
+                    "Yesterday's data not yet available. Switching to faster update interval (1 hour)."
+                )
+                self.update_interval = FAST_DATA_REFRESH_INTERVAL
+        else:
+            if self.update_interval != DATA_REFRESH_INTERVAL:
+                _LOGGER.info(
+                    "Yesterday's data is available. Reverting to normal update interval (12 hours)."
+                )
+                self.update_interval = DATA_REFRESH_INTERVAL
+
         return SuezWaterData(
             aggregated_value=aggregated_value,
             aggregated_attr=aggregated_attr,
             price=price,
+            yesterday_consumption=yesterday_consumption,
+            last_index=last_index,
+            last_index_date=last_index_date,
+            last_update_attempt=last_update_attempt_dt,
         )
 
-    async def _update_statistics(self, current_price: float | None) -> None:
+    async def _update_statistics(
+        self,
+        current_price: float | None,
+        usage: list[TelemetryMeasure],
+        last_stats_date: date | None,
+    ) -> None:
         """Update daily statistics."""
         _LOGGER.debug("Updating statistics for %s", self._water_statistic_id)
-
-        water_last_stat = await self._get_last_stat(self._water_statistic_id)
-        if not water_last_stat:
-            # This is the first execution. We import all possible history.
-            # Using 'since=None' to fetch all available history from the API.
-            _LOGGER.info("First run: performing full history import.")
-            fetch_since = None
-            last_stats_date = None
-        else:
-            # Subsequent executions. We only retrieve data since the last reading.
-            last_stats_date = datetime.fromtimestamp(water_last_stat["start"]).date()
-            _LOGGER.debug("Incremental update since %s", last_stats_date)
-            fetch_since = last_stats_date
-
-        if not (usage := await self._suez_client.fetch_all_daily_data(since=fetch_since)):
-            _LOGGER.debug("No recent usage data. Skipping update")
-            return
-        _LOGGER.debug("fetched data: %s", len(usage))
+        _LOGGER.debug("Got %d daily measures to process for statistics", len(usage))
 
         consumption_statistics, cost_statistics = self._build_statistics(
             current_price, usage, last_stats_date
