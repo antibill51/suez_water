@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import asyncio
 import logging
 
 from pysuez import PySuezError, SuezClient, TelemetryMeasure
@@ -22,6 +23,7 @@ from homeassistant.const import (
     UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.util.dt as dt_util
@@ -91,6 +93,25 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         self._water_statistic_id = (
             f"{DOMAIN}:{self._counter_id}_water_consumption_statistics"
         )
+
+    async def _async_setup(self) -> None:
+        """Check credentials with a retry mechanism."""
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if await self._suez_client.check_credentials():
+                    _LOGGER.debug("Successfully connected to Suez API.")
+                    return  # Success, exit the method
+                # If check_credentials returns False, it's a definitive auth error
+                raise ConfigEntryAuthFailed("Invalid credentials for suez water")
+            except PySuezError as err:
+                if attempt < max_attempts:
+                    delay = 5 * attempt  # Wait 5s, then 10s
+                    _LOGGER.warning("Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s", attempt, max_attempts, delay, err)
+                    await asyncio.sleep(delay)
+                else:
+                    _LOGGER.error("Could not connect to Suez API after %d attempts.", max_attempts)
+                    raise ConfigEntryError("Failed to connect to Suez API after multiple retries") from err
 
     async def _async_update_data(self) -> SuezWaterData:
         """Fetch data from API endpoint."""

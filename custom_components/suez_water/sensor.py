@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from pysuez.const import ATTRIBUTION
@@ -38,16 +38,19 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         translation_key="water_usage_yesterday",
         native_unit_of_measurement=UnitOfVolume.LITERS,
         device_class=SensorDeviceClass.WATER,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
         value_fn=lambda suez_data: suez_data.yesterday_consumption,
         attr_fn=lambda suez_data: {
-            "last_index": f"{suez_data.last_index / 1000:.3f} m³"
+            "last_index": suez_data.last_index
             if suez_data.last_index is not None
             else None,
-            "last_index_date": suez_data.last_index_date.isoformat()
-            if suez_data.last_index_date
-            else None,
+            "last_index_date": (
+                suez_data.last_index_date.isoformat()
+                if suez_data.last_index_date
+                else None
+            ),
+            "aggregated_data": asdict(suez_data.aggregated_attr) if suez_data.aggregated_attr else None,
         },
         entity_registry_enabled_default=True,
     ),
@@ -63,7 +66,7 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         translation_key="water_price",
         native_unit_of_measurement=f"{CURRENCY_EURO}/{UnitOfVolume.CUBIC_METERS}",
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         value_fn=lambda suez_data: suez_data.price,
     ),
 )

@@ -1,6 +1,6 @@
 # Suez Water Custom Component for Home Assistant
 
-This is a custom component for [Home Assistant](https://www.home-assistant.io/) to integrate with Suez Water services in France (`tout-sur-mon-eau.fr`).
+This is a custom component for [Home Assistant](https://www.home-assistant.io/) to integrate with Suez Water services in France (`toutsurmoneau.fr`).
 
 [!hacs_badge](https://github.com/custom-components/hacs)
 
@@ -9,6 +9,8 @@ This is a custom component for [Home Assistant](https://www.home-assistant.io/) 
 This repository is a **fork** of the official Suez Water integration included in Home Assistant Core.
 
 The primary purpose of this fork is to address specific issues encountered with a personal water meter which has only recently begun to communicate its data. While the official integration is robust, it did not work correctly in this specific scenario. This version contains modifications intended to resolve these problems.
+
+Additionally, this modified version uses the raw meter index to calculate consumption, rather than the pre-calculated liter value returned by the Suez website. This approach provides greater accuracy and better integration with Home Assistant's Energy dashboard.
 
 It is recommended to first try the official integration. If you encounter similar issues where your meter is new or has just started transmitting data, this custom component might be the solution for you.
 
@@ -37,9 +39,10 @@ This is the recommended way to install.
 
 1.  Go to Settings > Devices & Services > Add Integration.
 2.  Search for "Suez Water" and select it.
-3.  Enter your username, password, and counter ID for your `tout-sur-mon-eau.fr` account.
+3.  Enter your username, password, and counter ID for your `toutsurmoneau.fr` account.
 4.  The integration will create sensors for your water consumption.
 
 ## Credits
 - @ooii
 - @jb101010-2
+- @antibill51
