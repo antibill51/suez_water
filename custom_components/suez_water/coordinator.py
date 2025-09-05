@@ -285,8 +285,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             consumption_statistics.append(
                 StatisticData(
                     start=consumption_date,
-                    state=data.volume,
-                    sum=data.index,
+                    state=data.index,  # Total meter index at the end of the period
+                    sum=data.index,  # Total meter index at the end of the period
                 )
             )
             if current_price is not None:
@@ -296,8 +296,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 cost_statistics.append(
                     StatisticData(
                         start=consumption_date,
-                        state=day_cost,
-                        sum=total_cost,
+                        state=total_cost,  # Total cost at the end of the period
+                        sum=total_cost,  # Total cost at the end of the period
                     )
                 )
 
