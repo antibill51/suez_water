@@ -123,6 +123,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         aggregated = None
         try:
             aggregated = await self._suez_client.fetch_aggregated_data()
+            _LOGGER.info("Fetched aggregated data: %s", aggregated)
         except PySuezError as err:
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
@@ -130,7 +131,9 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
 
         price = None
         try:
-            price = (await self._suez_client.get_price()).price
+            price_data = await self._suez_client.get_price()
+            price = price_data.price
+            _LOGGER.info("Fetched water price: %s", price)
         except PySuezError as err:
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
@@ -153,6 +156,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             daily_usage = await self._suez_client.fetch_all_daily_data(
                 since=fetch_since
             )
+            _LOGGER.info("Fetched %d daily usage entries.", len(daily_usage))
+            _LOGGER.info("Fetched daily usage data: %s", daily_usage)
         except PySuezError as err:
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
@@ -313,7 +318,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             id=self._water_statistic_id, name="Consumption", unit=UnitOfVolume.LITERS
         )
 
-        _LOGGER.debug(
+        _LOGGER.info(
             "Adding %s statistics for %s",
             len(consumption_statistics),
             self._water_statistic_id,
@@ -323,7 +328,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         )
 
         if len(cost_statistics) > 0:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "Adding %s statistics for %s",
                 len(cost_statistics),
                 self._cost_statistic_id,
@@ -333,7 +338,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             )
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
 
-        _LOGGER.debug("Updated statistics for %s", self._water_statistic_id)
+        _LOGGER.info("Finished updating statistics for %s", self._water_statistic_id)
 
     def _get_statistics_metadata(
         self, id: str, name: str, unit: str

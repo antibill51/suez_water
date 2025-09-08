@@ -115,6 +115,7 @@ class SuezWaterSensor(CoordinatorEntity[SuezWaterCoordinator], SensorEntity):
         """Return if entity is available."""
         return (
             self.coordinator.last_update_success
+            and self.coordinator.data is not None
             and self.entity_description.value_fn(self.coordinator.data) is not None
         )
 
