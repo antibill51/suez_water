@@ -125,6 +125,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             aggregated = await self._suez_client.fetch_aggregated_data()
             _LOGGER.info("Fetched aggregated data: %s", aggregated)
         except PySuezError as err:
+            if "503" in str(err):
+                raise UpdateFailed("Failed to fetch aggregated data, service unavailable") from err
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
             _LOGGER.warning("Could not fetch aggregated data: %s", err)
@@ -135,6 +137,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             price = price_data.price
             _LOGGER.info("Fetched water price: %s", price)
         except PySuezError as err:
+            if "503" in str(err):
+                raise UpdateFailed("Failed to fetch water price, service unavailable") from err
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
             _LOGGER.warning(
@@ -159,6 +163,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             _LOGGER.info("Fetched %d daily usage entries.", len(daily_usage))
             _LOGGER.info("Fetched daily usage data: %s", daily_usage)
         except PySuezError as err:
+            if "503" in str(err):
+                raise UpdateFailed("Failed to fetch daily suez water data, service unavailable") from err
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
             # Keep original behavior: fail update if daily data fails
@@ -290,8 +296,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             consumption_statistics.append(
                 StatisticData(
                     start=consumption_date,
-                    state=data.index,  # Total meter index at the end of the period
-                    sum=data.index,  # Total meter index at the end of the period
+                    sum=data.index,  # Total meter index at the end of the period. HA will calculate the state (diff).
                 )
             )
             if current_price is not None:
@@ -301,8 +306,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 cost_statistics.append(
                     StatisticData(
                         start=consumption_date,
-                        state=total_cost,  # Total cost at the end of the period
-                        sum=total_cost,  # Total cost at the end of the period
+                        sum=total_cost,  # Total cost at the end of the period. HA will calculate the state (diff).
                     )
                 )
 
@@ -360,3 +364,16 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             get_last_statistics, self.hass, 1, id, True, {"sum"}
         )
         return last_stat[id][0] if last_stat else None
+
+    async def async_clear_statistics(self) -> None:
+        """Clear all statistics for this counter."""
+        statistic_ids = [
+            self._cost_statistic_id,
+            self._water_statistic_id,
+        ]
+        _LOGGER.debug("Removing statistics: %s", statistic_ids)
+        await get_instance(self.hass).async_clear_statistics(statistic_ids)
+        _LOGGER.info(
+            "Successfully removed statistics for counter %s",
+            self._counter_id,
+        )

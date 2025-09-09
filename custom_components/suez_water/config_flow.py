@@ -63,6 +63,11 @@ class SuezWaterConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 2
     entry: ConfigEntry | None = None
 
+    @staticmethod
+    def async_supports_reconfigure(config_entry: ConfigEntry) -> bool:
+        """Return whether this integration supports reconfiguration."""
+        return True
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -125,6 +130,49 @@ class SuezWaterConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm", data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}), errors=errors
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration with a user."""
+        self.entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        return await self.async_step_reconfigure_confirm(user_input)
+
+    async def async_step_reconfigure_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration with a user."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            data = {
+                CONF_USERNAME: user_input[CONF_USERNAME],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+                CONF_COUNTER_ID: self.entry.data[CONF_COUNTER_ID],  # Keep original counter_id
+            }
+            try:
+                await validate_input(data)
+                self.hass.config_entries.async_update_entry(self.entry, data=data)
+                await self.hass.config_entries.async_reload(self.entry.entry_id)
+                return self.async_abort(reason="reconfigure_successful")
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+
+        reconfigure_schema = vol.Schema(
+            {
+                vol.Required(CONF_USERNAME, default=self.entry.data[CONF_USERNAME]): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="reconfigure_confirm", data_schema=reconfigure_schema, errors=errors
         )
 
 
