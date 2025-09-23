@@ -31,6 +31,7 @@ import homeassistant.util.dt as dt_util
 
 from .const import (
     CONF_COUNTER_ID,
+    CONF_FAST_REFRESH_INTERVAL,
     DATA_REFRESH_INTERVAL,
     DOMAIN,
     FAST_DATA_REFRESH_INTERVAL,
@@ -237,13 +238,18 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
 
         # 4. Dynamically adjust update interval
         now = dt_util.now()
+        fast_refresh_interval_minutes = self.config_entry.options.get(
+            CONF_FAST_REFRESH_INTERVAL, FAST_DATA_REFRESH_INTERVAL.total_seconds() / 60
+        )
+        fast_refresh_interval = timedelta(minutes=fast_refresh_interval_minutes)
+
         if not yesterday_data_available:
-            if self.update_interval != FAST_DATA_REFRESH_INTERVAL:
+            if self.update_interval != fast_refresh_interval:
                 _LOGGER.info(
                     "Yesterday's data not yet available. Switching to faster update interval (%s).",
-                    FAST_DATA_REFRESH_INTERVAL,
+                    fast_refresh_interval,
                 )
-                self.update_interval = FAST_DATA_REFRESH_INTERVAL
+                self.update_interval = fast_refresh_interval
         else:
             # Yesterday's data is available. Schedule the next update for tomorrow morning.
             tomorrow = now.date() + timedelta(days=1)

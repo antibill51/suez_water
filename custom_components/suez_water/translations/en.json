@@ -20,7 +20,13 @@
   "options": {
     "step": {
       "init": {
-        "data": { "placeholder": "No options available" }
+        "data": {
+          "fast_refresh_interval": "Fast refresh interval (minutes)"
+        },
+        "data_description": {
+          "fast_refresh_interval": "Interval in minutes to check for new data when yesterday's data is not yet available. Default is 15 minutes."
+        },
+        "description": "Configure advanced options for Suez Water {tout_sur_mon_eau}"
       }
     }
   },

@@ -9,15 +9,16 @@ from pysuez import PySuezError, SuezClient
 import voluptuous as vol
 
 from homeassistant.config_entries import (
+    ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    ConfigEntry,
+    OptionsFlow,
     SOURCE_REAUTH,
 )
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import CONF_COUNTER_ID, DOMAIN
+from .const import CONF_COUNTER_ID, CONF_FAST_REFRESH_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,6 +63,11 @@ class SuezWaterConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
     entry: ConfigEntry | None = None
+
+    @staticmethod
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Get the options flow for this handler."""
+        return SuezWaterOptionsFlowHandler(config_entry)
 
     @staticmethod
     def async_supports_reconfigure(config_entry: ConfigEntry) -> bool:
@@ -173,6 +179,41 @@ class SuezWaterConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reconfigure_confirm", data_schema=reconfigure_schema, errors=errors
+        )
+
+
+class SuezWaterOptionsFlowHandler(OptionsFlow):
+    """Handle an options flow for Suez Water."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        # Get current value or default
+        fast_refresh_interval = self.config_entry.options.get(
+            CONF_FAST_REFRESH_INTERVAL, 15
+        )
+
+        options_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_FAST_REFRESH_INTERVAL,
+                    default=fast_refresh_interval,
+                ): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=options_schema,
+            description_placeholders={"tout_sur_mon_eau": "Tout sur mon Eau"},
         )
 
 

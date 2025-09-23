@@ -20,7 +20,13 @@
   "options": {
     "step": {
       "init": {
-        "data": { "placeholder": "Aucune option disponible" }
+        "data": {
+          "fast_refresh_interval": "Intervalle de rafraîchissement rapide (minutes)"
+        },
+        "data_description": {
+          "fast_refresh_interval": "Intervalle en minutes pour vérifier les nouvelles données lorsque celles de la veille ne sont pas encore disponibles. La valeur par défaut est de 15 minutes."
+        },
+        "description": "Configurer les options avancées pour Suez Water {tout_sur_mon_eau}"
       }
     }
   },
