@@ -1,10 +1,10 @@
 """The Suez Water integration."""
 
 from __future__ import annotations
+
 from dataclasses import asdict
 import logging
 
-from aiohttp import ClientError
 from homeassistant.components import recorder
 from homeassistant.const import Platform
 from homeassistant.helpers.device_registry import DeviceEntry
@@ -120,15 +120,4 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry": sanitized_entry_data,
         "coordinator_data": asdict(coordinator.data) if coordinator.data else None,
-        "client": {
-            "is_connected": coordinator._suez_client.is_connected,
-            "last_request_success": coordinator._suez_client.last_request_success,
-        },
-        "history": [
-            asdict(measure)
-            for measure in coordinator.data.history.values()
-            if coordinator.data
-        ]
-        if coordinator.data and coordinator.data.history
-        else None,
     }
