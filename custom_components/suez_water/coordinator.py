@@ -38,11 +38,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-
 @dataclass
 class SuezWaterAggregatedAttributes:
     """Class containing aggregated sensor extra attributes."""
-
     this_month_consumption: dict[str, float]
     previous_month_consumption: dict[str, float]
     last_year_overall: int
@@ -50,11 +48,9 @@ class SuezWaterAggregatedAttributes:
     history: dict[str, float]
     highest_monthly_consumption: float
 
-
 @dataclass
 class SuezWaterData:
     """Class used to hold all fetch data from suez api."""
-
     aggregated_value: float | None
     aggregated_attr: SuezWaterAggregatedAttributes | None
     price: float | None
@@ -63,9 +59,7 @@ class SuezWaterData:
     last_index_date: date | None
     last_update_attempt: datetime | None
 
-
 type SuezWaterConfigEntry = ConfigEntry[SuezWaterCoordinator]
-
 
 class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
     """Suez water coordinator."""
@@ -103,12 +97,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             try:
                 if await self._suez_client.check_credentials():
                     _LOGGER.debug("Successfully connected to Suez API.")
-                    return  # Success, exit the method
-                # If check_credentials returns False, it's a definitive auth error
+                    return
                 raise ConfigEntryAuthFailed("Invalid credentials for suez water")
             except PySuezError as err:
                 if attempt < max_attempts:
-                    delay = 5 * attempt  # Wait 5s, then 10s
+                    delay = 5 * attempt
                     _LOGGER.warning("Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s", attempt, max_attempts, delay, err)
                     await asyncio.sleep(delay)
                 else:
@@ -168,7 +161,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 raise UpdateFailed("Failed to fetch daily suez water data, service unavailable") from err
             if "Authentication failed" in str(err):
                 raise ConfigEntryAuthFailed from err
-            # Keep original behavior: fail update if daily data fails
             raise UpdateFailed("Failed to fetch daily suez water data") from err
 
         # 2. Update statistics
@@ -181,7 +173,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 raise UpdateFailed("Failed to update suez water statistics") from err
 
         # 3. Prepare data for sensors
-        # We need to sort daily_usage here as well to correctly calculate yesterday_consumption
         if daily_usage:
             daily_usage.sort(key=lambda m: m.date)
 
@@ -205,35 +196,26 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         yesterday_data_available = False
 
         if daily_usage:
-            # Find the latest measure that has an actual index value
+            # Find the latest measure that has an actual index value for attributes
             measures_with_index = [m for m in daily_usage if m.index is not None]
             if measures_with_index:
-                latest_measure_with_index = measures_with_index[-1] # Already sorted
+                latest_measure_with_index = measures_with_index[-1]
                 last_index = latest_measure_with_index.index
                 last_index_date = latest_measure_with_index.date
 
-            # Check for yesterday's data and calculate consumption
+            # SIMPLIFICATION MAJEURE ICI : On prend directement le volume
             today = dt_util.now().date()
             yesterday_dt = today - timedelta(days=1)
-            day_before_yesterday_dt = today - timedelta(days=2)
-
+            
             yesterday_measure = next(
                 (m for m in daily_usage if m.date == yesterday_dt), None
             )
-            day_before_yesterday_measure = next(
-                (m for m in daily_usage if m.date == day_before_yesterday_dt),
-                None,
-            )
 
-            if yesterday_measure and yesterday_measure.index is not None:
+            # Si on a la mesure d'hier avec un volume valide, c'est gagné
+            if yesterday_measure and yesterday_measure.volume is not None:
+                yesterday_consumption = yesterday_measure.volume
                 yesterday_data_available = True
-                if (
-                    day_before_yesterday_measure
-                    and day_before_yesterday_measure.index is not None
-                ):
-                    yesterday_consumption = (
-                        yesterday_measure.index - day_before_yesterday_measure.index
-                    )
+                _LOGGER.debug("Yesterday consumption found directly via volume: %s L", yesterday_consumption)
 
         # 4. Dynamically adjust update interval
         now = dt_util.now()
@@ -245,7 +227,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 )
                 self.update_interval = FAST_DATA_REFRESH_INTERVAL
         else:
-            # Yesterday's data is available. Schedule the next update for tomorrow morning.
             tomorrow = now.date() + timedelta(days=1)
             next_update_time = dt_util.start_of_local_day(tomorrow)
             new_interval = next_update_time - now
@@ -269,7 +250,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         last_stat: StatisticsRow | None,
     ) -> None:
         """Update daily statistics."""
-        # This is a critical path, wrap it in a try/except to provide better logging
         try:
             await self._do_async_update_statistics(current_price, usage, last_stat)
         except Exception:
@@ -301,44 +281,30 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         consumption_statistics = []
         cost_statistics = []
 
-        # Sort usage data by date to process them chronologically
         sorted_usage = sorted([m for m in usage if m.index is not None], key=lambda m: m.date)
 
-        # Get the last known values from the last statistic entry
         last_stats_date = datetime.fromtimestamp(last_stat["start"]).date() if last_stat else None
         last_index = last_stat["state"] if last_stat else None
         last_sum = last_stat["sum"] if last_stat else None
         last_total_cost = None
 
-        # Find the very first index to calculate the sum correctly
         first_index = await self._get_first_water_index(sorted_usage)
         if first_index is None:
             _LOGGER.warning("Could not determine the first meter index. Statistics might be incorrect.")
             return [], []
 
-        # We need to fetch the last cost statistic to continue the sum
         if current_price is not None:
             last_cost_stat = await self._get_last_stat(self._cost_statistic_id)
             if last_cost_stat:
                 last_total_cost = last_cost_stat["sum"]
 
         for i, data in enumerate(sorted_usage):
-            # We ignore data without an index or volume, and during incremental updates,
-            # we ignore already recorded data.
             if (
                 data.volume is None or (last_stats_date and data.date <= last_stats_date)
             ):
                 continue
 
             consumption_date = dt_util.start_of_local_day(data.date)
-            _LOGGER.debug(
-                "Processing statistics for date %s with index %s",
-                data.date,
-                data.index,
-            )
-
-            # state = index of the day
-            # sum = index of the day - first ever index
             state = data.index
             sum_value = data.index - first_index
 
@@ -351,26 +317,22 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             )
 
             if current_price is not None:
-                # Calculate daily consumption for cost calculation
                 previous_index = last_index
                 if i > 0:
                     previous_index = sorted_usage[i-1].index
 
                 if previous_index is None:
-                    # This happens on the very first run for the first item
                     daily_consumption = 0.0
                 else:
                     daily_consumption = data.index - previous_index
 
                 daily_cost = (daily_consumption / 1000) * current_price
 
-                # For the first cost statistic, the sum is the cost of the first day's consumption
                 if last_total_cost is None and i == 0:
                     total_cost = daily_cost
                 elif last_total_cost is not None:
                     total_cost = last_total_cost + daily_cost
                 else:
-                    # Should not happen if we process chronologically, but as a safeguard
                     continue
 
                 cost_statistics.append(
@@ -380,9 +342,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                         sum=total_cost,
                     )
                 )
-                last_total_cost = total_cost  # Update for next iteration in the same batch
-
-            last_index = data.index  # Update for next iteration
+                last_total_cost = total_cost
+            last_index = data.index
 
         return consumption_statistics, cost_statistics
 
@@ -392,8 +353,12 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         cost_statistics: list[StatisticData],
     ) -> None:
         """Persist given statistics in recorder."""
+        # FIX: unit_class volume
         consumption_metadata = self._get_statistics_metadata(
-            id=self._water_statistic_id, name="Consumption", unit=UnitOfVolume.LITERS
+            id=self._water_statistic_id, 
+            name="Consumption", 
+            unit=UnitOfVolume.LITERS,
+            unit_class="volume"
         )
 
         _LOGGER.info(
@@ -411,17 +376,22 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 len(cost_statistics),
                 self._cost_statistic_id,
             )
+            # FIX: unit_class monetary
             cost_metadata = self._get_statistics_metadata(
-                id=self._cost_statistic_id, name="Cost", unit=CURRENCY_EURO
+                id=self._cost_statistic_id, 
+                name="Cost", 
+                unit=CURRENCY_EURO,
+                unit_class="monetary"
             )
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
 
         _LOGGER.info("Finished updating statistics for %s", self._water_statistic_id)
 
     def _get_statistics_metadata(
-        self, id: str, name: str, unit: str
+        self, id: str, name: str, unit: str, unit_class: str
     ) -> StatisticMetaData:
         """Build statistics metadata for requested configuration."""
+        # FIX: unit_class param in init
         return StatisticMetaData(
             has_mean=False,
             mean_type=StatisticMeanType.NONE,
@@ -430,6 +400,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             source=DOMAIN,
             statistic_id=id,
             unit_of_measurement=unit,
+            unit_class=unit_class,
         )
 
     async def _get_first_water_index(self, sorted_usage: list[TelemetryMeasure]) -> float | None:
@@ -437,8 +408,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         if self._first_water_index is not None:
             return self._first_water_index
 
-        # Try to find the first statistic in the database
-        # We use a date far in the past that is safe for timestamp conversion
         start_date = datetime(1971, 1, 1)
         first_stat_list = await get_instance(self.hass).async_add_executor_job(
             statistics_during_period,
@@ -453,21 +422,18 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
 
         if first_stat_list and self._water_statistic_id in first_stat_list and first_stat_list[self._water_statistic_id]:
             first_entry = first_stat_list[self._water_statistic_id][0]
-            # state = index, sum = index - first_index. So first_index = state - sum
             if first_entry["state"] is None or first_entry["sum"] is None:
-                return None # Not enough data to calculate first index
+                return None
             self._first_water_index = first_entry["state"] - first_entry["sum"]
             _LOGGER.debug("Found first index from existing statistics: %s", self._first_water_index)
             return self._first_water_index
 
-        # If no stats in DB, use the first value from the current API fetch
         if sorted_usage:
             self._first_water_index = sorted_usage[0].index
             _LOGGER.debug("Using first index from current API fetch: %s", self._first_water_index)
             return self._first_water_index
 
         return None
-
 
     async def _get_last_stat(self, id: str) -> StatisticsRow | None:
         """Find last registered statistics of given id."""
@@ -488,5 +454,4 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             "Successfully removed statistics for counter %s",
             self._counter_id,
         )
-        # Reset cached first index
         self._first_water_index = None

@@ -23,14 +23,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import CONF_COUNTER_ID, DOMAIN
 from .coordinator import SuezWaterConfigEntry, SuezWaterCoordinator, SuezWaterData
 
-
 @dataclass(frozen=True, kw_only=True)
 class SuezWaterSensorEntityDescription(SensorEntityDescription):
     """Describes Suez water sensor entity."""
 
     value_fn: Callable[[SuezWaterData], float | str | None]
     attr_fn: Callable[[SuezWaterData], dict[str, Any] | None] = lambda _: None
-
 
 SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
     SuezWaterSensorEntityDescription(
@@ -71,7 +69,6 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
     ),
 )
 
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: SuezWaterConfigEntry,
@@ -84,7 +81,6 @@ async def async_setup_entry(
     async_add_entities(
         SuezWaterSensor(coordinator, counter_id, description) for description in SENSORS
     )
-
 
 class SuezWaterSensor(CoordinatorEntity[SuezWaterCoordinator], SensorEntity):
     """Representation of a Suez water sensor."""
@@ -113,10 +109,8 @@ class SuezWaterSensor(CoordinatorEntity[SuezWaterCoordinator], SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return (
-            self.coordinator.data is not None
-            and self.entity_description.value_fn(self.coordinator.data) is not None
-        )
+        # CORRECTION MAJEURE: On check juste si le coordinateur fonctionne
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     @property
     def native_value(self) -> float | str | None:
