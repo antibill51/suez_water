@@ -114,7 +114,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         def map_dict(param: dict[date, float]) -> dict[str, float]:
             return {str(key): value for key, value in param.items()}
 
-        # 1. Fetch all data from Suez API
         aggregated = None
         try:
             aggregated = await self._suez_client.fetch_aggregated_data()
@@ -163,7 +162,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 raise ConfigEntryAuthFailed from err
             raise UpdateFailed("Failed to fetch daily suez water data") from err
 
-        # 2. Update statistics
         if not daily_usage or not any(m.index is not None for m in daily_usage):
             _LOGGER.debug("No recent usage data. Skipping statistics update")
         else:
@@ -172,7 +170,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             except Exception as err:
                 raise UpdateFailed("Failed to update suez water statistics") from err
 
-        # 3. Prepare data for sensors
         if daily_usage:
             daily_usage.sort(key=lambda m: m.date)
 
@@ -196,28 +193,24 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         yesterday_data_available = False
 
         if daily_usage:
-            # Find the latest measure that has an actual index value for attributes
             measures_with_index = [m for m in daily_usage if m.index is not None]
             if measures_with_index:
                 latest_measure_with_index = measures_with_index[-1]
                 last_index = latest_measure_with_index.index
                 last_index_date = latest_measure_with_index.date
 
-            # SIMPLIFICATION MAJEURE ICI : On prend directement le volume
             today = dt_util.now().date()
             yesterday_dt = today - timedelta(days=1)
-            
+
             yesterday_measure = next(
                 (m for m in daily_usage if m.date == yesterday_dt), None
             )
 
-            # Si on a la mesure d'hier avec un volume valide, c'est gagné
             if yesterday_measure and yesterday_measure.volume is not None:
                 yesterday_consumption = yesterday_measure.volume
                 yesterday_data_available = True
                 _LOGGER.debug("Yesterday consumption found directly via volume: %s L", yesterday_consumption)
 
-        # 4. Dynamically adjust update interval
         now = dt_util.now()
         if not yesterday_data_available:
             if self.update_interval != FAST_DATA_REFRESH_INTERVAL:
@@ -353,12 +346,10 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         cost_statistics: list[StatisticData],
     ) -> None:
         """Persist given statistics in recorder."""
-        # FIX: unit_class volume
         consumption_metadata = self._get_statistics_metadata(
-            id=self._water_statistic_id, 
-            name="Consumption", 
+            id=self._water_statistic_id,
+            name="Consumption",
             unit=UnitOfVolume.LITERS,
-            unit_class="volume"
         )
 
         _LOGGER.info(
@@ -376,22 +367,19 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 len(cost_statistics),
                 self._cost_statistic_id,
             )
-            # FIX: unit_class monetary
             cost_metadata = self._get_statistics_metadata(
-                id=self._cost_statistic_id, 
-                name="Cost", 
+                id=self._cost_statistic_id,
+                name="Cost",
                 unit=CURRENCY_EURO,
-                unit_class="monetary"
             )
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
 
         _LOGGER.info("Finished updating statistics for %s", self._water_statistic_id)
 
     def _get_statistics_metadata(
-        self, id: str, name: str, unit: str, unit_class: str
+        self, id: str, name: str, unit: str
     ) -> StatisticMetaData:
         """Build statistics metadata for requested configuration."""
-        # FIX: unit_class param in init
         return StatisticMetaData(
             has_mean=False,
             mean_type=StatisticMeanType.NONE,
@@ -400,7 +388,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             source=DOMAIN,
             statistic_id=id,
             unit_of_measurement=unit,
-            unit_class=unit_class,
         )
 
     async def _get_first_water_index(self, sorted_usage: list[TelemetryMeasure]) -> float | None:
