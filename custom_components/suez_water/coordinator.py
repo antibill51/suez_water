@@ -27,6 +27,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util.unit_conversion import VolumeConverter
 import homeassistant.util.dt as dt_util
 
 from .const import (
@@ -350,6 +351,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             id=self._water_statistic_id,
             name="Consumption",
             unit=UnitOfVolume.LITERS,
+            unit_class=VolumeConverter.UNIT_CLASS,
         )
 
         _LOGGER.info(
@@ -371,13 +373,14 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 id=self._cost_statistic_id,
                 name="Cost",
                 unit=CURRENCY_EURO,
+                unit_class=None,  # pas de convertisseur pour les devises
             )
             async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
 
         _LOGGER.info("Finished updating statistics for %s", self._water_statistic_id)
 
     def _get_statistics_metadata(
-        self, id: str, name: str, unit: str
+        self, id: str, name: str, unit: str, unit_class: str | None = None
     ) -> StatisticMetaData:
         """Build statistics metadata for requested configuration."""
         return StatisticMetaData(
@@ -388,6 +391,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             source=DOMAIN,
             statistic_id=id,
             unit_of_measurement=unit,
+            unit_class=unit_class,
         )
 
     async def _get_first_water_index(self, sorted_usage: list[TelemetryMeasure]) -> float | None:
