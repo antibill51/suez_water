@@ -708,10 +708,10 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             url = f"https://hubeau.eaufrance.fr/api/v1/qualite_eau_potable/resultats_dis?code_commune={insee_code}&size=50&sort=desc"
             session = async_get_clientsession(self.hass)
             async with session.get(url, timeout=10) as resp:
-                if resp.status != 200:
+                if resp.status not in (200, 206):
                     _LOGGER.warning("Hub'Eau API returned HTTP %s for commune %s", resp.status, insee_code)
                     return None
-                json_data = await resp.json()
+                json_data = await resp.json(content_type=None)
                 rows = json_data.get("data", [])
                 if not rows:
                     return None
