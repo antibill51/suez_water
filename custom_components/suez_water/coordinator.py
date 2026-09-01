@@ -59,6 +59,7 @@ class SuezWaterAggregatedAttributes:
 class SuezWaterQualityData:
     """Class containing drinking water quality parameters from Hub'Eau / ARS."""
     status: str | None = None
+    conclusion: str | None = None
     sample_date: str | None = None
     commune_name: str | None = None
     ph: float | None = None
@@ -309,14 +310,20 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
 
         # 8. Water Quality (Hub'Eau open data / ARS)
         water_quality = None
-        try:
+        insee_code = None
+        if commune_url:
+            m = re.search(r"-(\d{5})", commune_url) or re.search(r"/(\d{5})", commune_url) or re.search(r"(\d{5})", commune_url)
+            if m:
+                insee_code = m.group(1)
+
+        if not insee_code:
             insee_code = await self._async_get_insee_code()
-            if insee_code:
-                water_quality = await self._async_fetch_water_quality(insee_code)
-        except Exception as err:
-            _LOGGER.debug("Could not fetch water quality: %s", err)
-            if self.data and self.data.quality:
-                water_quality = self.data.quality
+
+        if insee_code:
+            water_quality = await self._async_fetch_water_quality(insee_code)
+
+        if not water_quality and self.data and self.data.quality:
+            water_quality = self.data.quality
 
         # 9. Dynamically adjust update interval
         now = dt_util.now()
@@ -733,6 +740,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 _LOGGER.info("Fetched water quality for %s (%s): status=%s, pH=%s, nitrates=%s, hardness=%s", commune_name, insee_code, status, params.get("pH"), params.get("Nitrates (en NO3)"), params.get("Titre hydrotimétrique"))
                 return SuezWaterQualityData(
                     status=status,
+                    conclusion=conclusion,
                     sample_date=sample_date,
                     commune_name=commune_name,
                     ph=params.get("pH"),

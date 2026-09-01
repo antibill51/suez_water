@@ -111,7 +111,9 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         value_fn=lambda suez_data: suez_data.quality.status if suez_data.quality else None,
         attr_fn=lambda suez_data: {
             "date_prelevement": suez_data.quality.sample_date,
+            "nom_commune": suez_data.quality.commune_name,
             "commune": suez_data.quality.commune_name,
+            "conclusion_conformite_prelevement": suez_data.quality.conclusion,
         }
         if suez_data.quality
         else None,
