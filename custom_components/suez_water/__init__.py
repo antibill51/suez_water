@@ -41,22 +41,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: SuezWaterConfigEntry) -
     return unload_ok
 
 
-# async def async_remove_entry(hass: HomeAssistant, entry: SuezWaterConfigEntry) -> None:
-#     """Handle removal of an entry."""
-#     counter_id = entry.data[CONF_COUNTER_ID]
-#     statistic_ids = [
-#         f"{DOMAIN}:{counter_id}_water_cost_statistics",
-#         f"{DOMAIN}:{counter_id}_water_consumption_statistics",
-#     ]
-
-#     _LOGGER.debug("Removing statistics: %s", statistic_ids)
-#     await recorder.get_instance(hass).async_clear_statistics(statistic_ids)
-#     _LOGGER.info(
-#         "Successfully removed statistics for counter %s",
-#         counter_id,
-#     )
-
-
 async def async_remove_entry(hass: HomeAssistant, entry: SuezWaterConfigEntry) -> None:
     """Handle removal of an entry."""
     # The coordinator is not available when removing an entry, so we can't use it.

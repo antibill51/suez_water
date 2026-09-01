@@ -20,7 +20,14 @@
   "options": {
     "step": {
       "init": {
-        "data": { "placeholder": "Aucune option disponible" }
+        "data": {
+          "yearly_subscription": "Abonnement annuel fixe (€ / an)",
+          "price_override": "Prix personnalisé du m³ (€ / m³, laisser à 0 pour automatique)"
+        },
+        "data_description": {
+          "yearly_subscription": "Coût annuel total de la part fixe (abonnement eau potable + assainissement) pour calculer le coût journalier fixe.",
+          "price_override": "Permet de forcer manuellement le prix du m³ si l'API Suez ne le renvoie pas correctement."
+        }
       }
     }
   },
@@ -34,6 +41,12 @@
       },
       "water_price": {
         "name": "Prix de l'eau"
+      },
+      "daily_subscription_cost": {
+        "name": "Coût abonnement jour"
+      },
+      "yesterday_total_cost": {
+        "name": "Coût total de la veille"
       }
     }
   }

@@ -20,7 +20,14 @@
   "options": {
     "step": {
       "init": {
-        "data": { "placeholder": "No options available" }
+        "data": {
+          "yearly_subscription": "Fixed yearly subscription (€ / year)",
+          "price_override": "Custom water price per m³ (€ / m³, leave 0 for automatic)"
+        },
+        "data_description": {
+          "yearly_subscription": "Total annual fixed subscription cost (drinking water + sanitation) used to compute the daily fixed cost.",
+          "price_override": "Manually override volumetric price per m³ if Suez API returns incorrect data."
+        }
       }
     }
   },
@@ -34,6 +41,12 @@
       },
       "water_price": {
         "name": "Water price"
+      },
+      "daily_subscription_cost": {
+        "name": "Daily subscription cost"
+      },
+      "yesterday_total_cost": {
+        "name": "Yesterday total cost"
       }
     }
   }

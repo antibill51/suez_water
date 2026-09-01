@@ -36,7 +36,7 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         translation_key="water_usage_yesterday",
         native_unit_of_measurement=UnitOfVolume.LITERS,
         device_class=SensorDeviceClass.WATER,
-        state_class=SensorStateClass.TOTAL,
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=0,
         value_fn=lambda suez_data: suez_data.yesterday_consumption,
         attr_fn=lambda suez_data: {
@@ -65,7 +65,26 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         native_unit_of_measurement=f"{CURRENCY_EURO}/{UnitOfVolume.CUBIC_METERS}",
         device_class=SensorDeviceClass.MONETARY,
         state_class=None,
+        suggested_display_precision=2,
         value_fn=lambda suez_data: suez_data.price,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="daily_subscription_cost",
+        translation_key="daily_subscription_cost",
+        native_unit_of_measurement=f"{CURRENCY_EURO}/jour",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=None,
+        suggested_display_precision=4,
+        value_fn=lambda suez_data: suez_data.daily_subscription_cost,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="yesterday_total_cost",
+        translation_key="yesterday_total_cost",
+        native_unit_of_measurement=CURRENCY_EURO,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=None,
+        suggested_display_precision=2,
+        value_fn=lambda suez_data: suez_data.yesterday_total_cost,
     ),
 )
 
