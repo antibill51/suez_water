@@ -3,7 +3,9 @@ from datetime import date, datetime, timedelta
 import asyncio
 import calendar
 import logging
+import re
 
+from bs4 import BeautifulSoup
 from pysuez import PySuezError, SuezClient, TelemetryMeasure
 
 from homeassistant.components.recorder import get_instance
@@ -25,11 +27,13 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.unit_conversion import VolumeConverter
 import homeassistant.util.dt as dt_util
 
 from .const import (
+    CONF_COMMUNE_PRICE_URL,
     CONF_COUNTER_ID,
     CONF_PRICE_OVERRIDE,
     CONF_YEARLY_SUBSCRIPTION,
@@ -60,6 +64,8 @@ class SuezWaterData:
     last_index: float | None
     last_index_date: date | None
     last_update_attempt: datetime | None
+    subscription_water: float | None = None
+    subscription_sanitation: float | None = None
     daily_subscription_cost: float | None = None
     yesterday_total_cost: float | None = None
 
@@ -129,7 +135,29 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 raise UpdateFailed(f"Suez service unavailable ({err})") from err
             _LOGGER.warning("Could not fetch aggregated data: %s", err)
 
-        # 1. Price (from options override or API)
+        # 1. Automatic commune pricing & subscriptions (if configured)
+        commune_url = self.config_entry.options.get(
+            CONF_COMMUNE_PRICE_URL,
+            self.config_entry.data.get(CONF_COMMUNE_PRICE_URL),
+        )
+        subscription_water = None
+        subscription_sanitation = None
+        commune_prices = None
+        if commune_url:
+            commune_prices = await self._async_fetch_commune_prices(commune_url)
+            if commune_prices:
+                subscription_water = commune_prices.get("subscription_water")
+                subscription_sanitation = commune_prices.get("subscription_sanitation")
+                _LOGGER.info(
+                    "Fetched commune prices from %s: water_sub=%s€, sanitation_sub=%s€, total_sub=%s€/an, total_price=%s€/m³",
+                    commune_url,
+                    subscription_water,
+                    subscription_sanitation,
+                    commune_prices.get("total_subscription_yearly"),
+                    commune_prices.get("total_price_m3"),
+                )
+
+        # 2. Price (options override > API > commune scrape)
         price = None
         price_override = float(self.config_entry.options.get(CONF_PRICE_OVERRIDE, 0.0))
         if price_override > 0.0:
@@ -142,8 +170,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 _LOGGER.info("Fetched water price from API: %s €/m³", price)
             except PySuezError as err:
                 _LOGGER.warning("Failed to fetch water price from API: %s", err)
+                if commune_prices and commune_prices.get("total_price_m3"):
+                    price = commune_prices["total_price_m3"]
+                    _LOGGER.info("Using water price fallback from commune page: %s €/m³", price)
 
-        # 2. Fetch daily usage with a 3-day safety overlap
+        # 3. Fetch daily usage with a 3-day safety overlap
         water_last_stat = await self._get_last_stat(self._water_statistic_id)
         if not water_last_stat:
             _LOGGER.info("First run: performing full history import.")
@@ -165,7 +196,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 raise UpdateFailed(f"Failed to fetch daily suez water data: {err}") from err
             _LOGGER.warning("Failed to fetch daily usage: %s", err)
 
-        # 3. Update statistics
+        # 4. Update statistics
         if not daily_usage or not any(m.index is not None for m in daily_usage):
             _LOGGER.debug("No new daily index data for statistics update.")
         else:
@@ -177,7 +208,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         if daily_usage:
             daily_usage.sort(key=lambda m: m.date)
 
-        # 4. Aggregated data formatting
+        # 5. Aggregated data formatting
         aggregated_value = None
         aggregated_attr = None
         if aggregated:
@@ -192,7 +223,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 history=map_dict(aggregated.history),
             )
 
-        # 5. Extract yesterday's consumption with robust fallbacks
+        # 6. Extract yesterday's consumption with robust fallbacks
         yesterday_consumption = None
         last_index = None
         last_index_date = None
@@ -237,8 +268,15 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             last_index_date = self.data.last_index_date
             _LOGGER.debug("Preserved previous last_index: %s (%s)", last_index, last_index_date)
 
-        # 6. Calculate fixed subscription and daily costs
-        yearly_sub = float(self.config_entry.options.get(CONF_YEARLY_SUBSCRIPTION, 0.0))
+        # 7. Calculate fixed subscription and daily costs
+        manual_sub = float(self.config_entry.options.get(CONF_YEARLY_SUBSCRIPTION, 0.0))
+        if manual_sub > 0.0:
+            yearly_sub = manual_sub
+        elif commune_prices and commune_prices.get("total_subscription_yearly"):
+            yearly_sub = commune_prices["total_subscription_yearly"]
+        else:
+            yearly_sub = 0.0
+
         daily_subscription_cost = None
         yesterday_total_cost = None
         if yearly_sub > 0.0:
@@ -251,7 +289,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             sub_part = daily_subscription_cost or 0.0
             yesterday_total_cost = round(water_part + sub_part, 2)
 
-        # 7. Dynamically adjust update interval
+        # 8. Dynamically adjust update interval
         now = dt_util.now()
         if not yesterday_data_available:
             if self.update_interval != FAST_DATA_REFRESH_INTERVAL:
@@ -276,6 +314,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             last_index=last_index,
             last_index_date=last_index_date,
             last_update_attempt=last_update_attempt_dt,
+            subscription_water=subscription_water,
+            subscription_sanitation=subscription_sanitation,
             daily_subscription_cost=daily_subscription_cost,
             yesterday_total_cost=yesterday_total_cost,
         )
@@ -486,3 +526,67 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             self._counter_id,
         )
         self._first_water_index = None
+
+    async def _async_fetch_commune_prices(self, url: str) -> dict[str, float] | None:
+        """Fetch and parse commune price page from Tout sur mon eau."""
+        try:
+            session = async_get_clientsession(self.hass)
+            async with session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    _LOGGER.warning("Could not fetch commune prices from %s: HTTP %s", url, response.status)
+                    return None
+                html = await response.text()
+
+            def _parse(html_content: str) -> dict[str, float] | None:
+                soup = BeautifulSoup(html_content, "html.parser")
+                water_prices_div = soup.find("div", class_="water-prices")
+                if not water_prices_div:
+                    return None
+
+                data = {
+                    "subscription_water": 0.0,
+                    "subscription_sanitation": 0.0,
+                    "price_water_m3": 0.0,
+                    "price_sanitation_m3": 0.0,
+                }
+
+                sections = water_prices_div.find_all("div", recursive=False)
+                for sec in sections:
+                    text = sec.get_text()
+                    # Eau potable
+                    if any(k in text.lower() for k in ["service de l’eau", "service de l'eau", "eau potable"]):
+                        for p in sec.find_all("p"):
+                            p_text = p.get_text()
+                            if "abonnement" in p_text.lower():
+                                span = p.find("span")
+                                if span:
+                                    val_str = span.get_text().strip().replace(",", ".")
+                                    data["subscription_water"] = float(re.sub(r"[^0-9.]", "", val_str) or 0)
+                            elif any(k in p_text.lower() for k in ["au m", "m3", "m³"]):
+                                span = p.find("span")
+                                if span:
+                                    val_str = span.get_text().strip().replace(",", ".")
+                                    data["price_water_m3"] = float(re.sub(r"[^0-9.]", "", val_str) or 0)
+                    # Assainissement
+                    elif "assainissement" in text.lower():
+                        for p in sec.find_all("p"):
+                            p_text = p.get_text()
+                            if "abonnement" in p_text.lower():
+                                span = p.find("span")
+                                if span:
+                                    val_str = span.get_text().strip().replace(",", ".")
+                                    data["subscription_sanitation"] = float(re.sub(r"[^0-9.]", "", val_str) or 0)
+                            elif any(k in p_text.lower() for k in ["au m", "m3", "m³"]):
+                                span = p.find("span")
+                                if span:
+                                    val_str = span.get_text().strip().replace(",", ".")
+                                    data["price_sanitation_m3"] = float(re.sub(r"[^0-9.]", "", val_str) or 0)
+
+                data["total_subscription_yearly"] = round(data["subscription_water"] + data["subscription_sanitation"], 2)
+                data["total_price_m3"] = round(data["price_water_m3"] + data["price_sanitation_m3"], 4)
+                return data
+
+            return await self.hass.async_add_executor_job(_parse, html)
+        except Exception as err:
+            _LOGGER.warning("Error fetching commune prices from %s: %s", url, err)
+            return None
