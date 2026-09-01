@@ -3,12 +3,14 @@
     "step": {
       "user": {
         "data": {
-          "counter_id": "Meter ID"
+          "counter_id": "Meter ID",
+          "commune_price_url": "Commune price page URL"
         },
         "data_description": {
           "username": "Enter your login associated with your {tout_sur_mon_eau} account",
           "password": "Enter your password associated with your {tout_sur_mon_eau} account",
-          "counter_id": "Enter your meter ID (ex: 12345678). Should be found automatically during setup, if not see integration documentation for more information"
+          "counter_id": "Enter your meter ID (ex: 12345678). Should be found automatically during setup, if not see integration documentation for more information",
+          "commune_price_url": "Public Suez/Tout sur mon eau URL of your commune (ex: https://rhoneventoux.toutsurmoneau.fr/eau-dans-ma-commune/sorgues-84129/prix-de-l-eau) to automatically scrape subscription fees and tariffs."
         },
         "description": "Connect your Suez Water {tout_sur_mon_eau} account to retrieve your water consumption"
       }
@@ -21,11 +23,13 @@
     "step": {
       "init": {
         "data": {
-          "yearly_subscription": "Fixed yearly subscription (€ / year)",
+          "commune_price_url": "Commune price page URL",
+          "yearly_subscription": "Fallback fixed yearly subscription (€ / year, if no URL)",
           "price_override": "Custom water price per m³ (€ / m³, leave 0 for automatic)"
         },
         "data_description": {
-          "yearly_subscription": "Total annual fixed subscription cost (drinking water + sanitation) used to compute the daily fixed cost.",
+          "commune_price_url": "Public Suez/Tout sur mon eau URL of your commune (ex: https://rhoneventoux.toutsurmoneau.fr/eau-dans-ma-commune/sorgues-84129/prix-de-l-eau) to automatically retrieve water & sanitation subscription costs.",
+          "yearly_subscription": "Fallback total annual fixed subscription cost if no commune URL is provided.",
           "price_override": "Manually override volumetric price per m³ if Suez API returns incorrect data."
         }
       }
@@ -41,6 +45,12 @@
       },
       "water_price": {
         "name": "Water price"
+      },
+      "subscription_water": {
+        "name": "Yearly water subscription"
+      },
+      "subscription_sanitation": {
+        "name": "Yearly sanitation subscription"
       },
       "daily_subscription_cost": {
         "name": "Daily subscription cost"
