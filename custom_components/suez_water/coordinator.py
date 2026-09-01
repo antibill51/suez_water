@@ -4,6 +4,7 @@ import asyncio
 import calendar
 import logging
 import re
+import unicodedata
 
 from bs4 import BeautifulSoup
 from pysuez import PySuezError, SuezClient, TelemetryMeasure
@@ -135,11 +136,14 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 raise UpdateFailed(f"Suez service unavailable ({err})") from err
             _LOGGER.warning("Could not fetch aggregated data: %s", err)
 
-        # 1. Automatic commune pricing & subscriptions (if configured)
+        # 1. Automatic commune pricing & subscriptions
         commune_url = self.config_entry.options.get(
             CONF_COMMUNE_PRICE_URL,
             self.config_entry.data.get(CONF_COMMUNE_PRICE_URL),
         )
+        if not commune_url:
+            commune_url = await self._async_discover_commune_price_url()
+
         subscription_water = None
         subscription_sanitation = None
         commune_prices = None
@@ -589,4 +593,68 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             return await self.hass.async_add_executor_job(_parse, html)
         except Exception as err:
             _LOGGER.warning("Error fetching commune prices from %s: %s", url, err)
+            return None
+
+    async def _async_discover_commune_price_url(self) -> str | None:
+        """Attempt to automatically discover the commune price URL from Suez contract and meter data."""
+        try:
+            contract = await self._suez_client.contract_data()
+            insee = str(contract.inseeCode) if contract and getattr(contract, "inseeCode", None) else None
+            brand_url = getattr(contract, "website_link", None) or "https://www.toutsurmoneau.fr"
+            if not brand_url.startswith("http"):
+                brand_url = f"https://{brand_url}"
+            brand_url = brand_url.rstrip("/")
+
+            city = None
+            try:
+                meters = await self._suez_client.get_meters()
+                if (
+                    meters
+                    and getattr(meters, "content", None)
+                    and getattr(meters.content, "clientCompteursPro", None)
+                    and len(meters.content.clientCompteursPro) > 0
+                    and getattr(meters.content.clientCompteursPro[0], "compteursPro", None)
+                    and len(meters.content.clientCompteursPro[0].compteursPro) > 0
+                ):
+                    meter_pro = meters.content.clientCompteursPro[0].compteursPro[0]
+                    city = getattr(meter_pro, "villeDesserte", None)
+            except Exception:
+                pass
+
+            if not city and contract and getattr(contract, "addrServed", None):
+                city = contract.addrServed.split(",")[-1].strip()
+
+            if not insee:
+                _LOGGER.debug("Could not discover commune pricing URL: inseeCode missing")
+                return None
+
+            def _slugify(val: str) -> str:
+                val = unicodedata.normalize("NFKD", val).encode("ascii", "ignore").decode("ascii")
+                val = re.sub(r"[^\w\s-]", "", val).strip().lower()
+                return re.sub(r"[-\s]+", "-", val)
+
+            candidates = []
+            if city:
+                slug_city = _slugify(city)
+                candidates.append(f"{brand_url}/eau-dans-ma-commune/{slug_city}-{insee}/prix-de-l-eau")
+                if "toutsurmoneau.fr" not in brand_url:
+                    candidates.append(f"https://www.toutsurmoneau.fr/eau-dans-ma-commune/{slug_city}-{insee}/prix-de-l-eau")
+            else:
+                candidates.append(f"{brand_url}/eau-dans-ma-commune/{insee}/prix-de-l-eau")
+                candidates.append(f"https://www.toutsurmoneau.fr/eau-dans-ma-commune/{insee}/prix-de-l-eau")
+
+            session = async_get_clientsession(self.hass)
+            for candidate in candidates:
+                try:
+                    async with session.get(candidate, timeout=10) as resp:
+                        if resp.status == 200:
+                            _LOGGER.info("Successfully discovered commune price URL automatically: %s", candidate)
+                            return candidate
+                except Exception:
+                    continue
+
+            _LOGGER.debug("No valid commune pricing URL found among candidates: %s", candidates)
+            return None
+        except Exception as err:
+            _LOGGER.debug("Could not automatically discover commune pricing URL: %s", err)
             return None
