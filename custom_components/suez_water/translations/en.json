@@ -57,6 +57,27 @@
       },
       "yesterday_total_cost": {
         "name": "Yesterday total cost"
+      },
+      "water_quality_status": {
+        "name": "Water quality - Overall status"
+      },
+      "water_ph": {
+        "name": "Water quality - pH"
+      },
+      "water_temperature": {
+        "name": "Water quality - Temperature"
+      },
+      "water_nitrates": {
+        "name": "Water quality - Nitrates"
+      },
+      "water_hardness": {
+        "name": "Water quality - Hardness"
+      },
+      "water_free_chlorine": {
+        "name": "Water quality - Free chlorine"
+      },
+      "water_ecoli": {
+        "name": "Water quality - E. Coli"
       }
     }
   }

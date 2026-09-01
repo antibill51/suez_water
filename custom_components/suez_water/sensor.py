@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import CURRENCY_EURO, UnitOfVolume
+from homeassistant.const import CURRENCY_EURO, UnitOfTemperature, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -103,6 +103,72 @@ SENSORS: tuple[SuezWaterSensorEntityDescription, ...] = (
         state_class=None,
         suggested_display_precision=2,
         value_fn=lambda suez_data: suez_data.yesterday_total_cost,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_quality_status",
+        translation_key="water_quality_status",
+        icon="mdi:water-check",
+        value_fn=lambda suez_data: suez_data.quality.status if suez_data.quality else None,
+        attr_fn=lambda suez_data: {
+            "date_prelevement": suez_data.quality.sample_date,
+            "commune": suez_data.quality.commune_name,
+        }
+        if suez_data.quality
+        else None,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_ph",
+        translation_key="water_ph",
+        icon="mdi:ph",
+        native_unit_of_measurement="pH",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda suez_data: suez_data.quality.ph if suez_data.quality else None,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_temperature",
+        translation_key="water_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda suez_data: suez_data.quality.temperature if suez_data.quality else None,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_nitrates",
+        translation_key="water_nitrates",
+        icon="mdi:molecule",
+        native_unit_of_measurement="mg/L",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda suez_data: suez_data.quality.nitrates if suez_data.quality else None,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_hardness",
+        translation_key="water_hardness",
+        icon="mdi:water-percent",
+        native_unit_of_measurement="°f",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda suez_data: suez_data.quality.hardness if suez_data.quality else None,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_free_chlorine",
+        translation_key="water_free_chlorine",
+        icon="mdi:flask-outline",
+        native_unit_of_measurement="mg/L",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda suez_data: suez_data.quality.free_chlorine if suez_data.quality else None,
+    ),
+    SuezWaterSensorEntityDescription(
+        key="water_ecoli",
+        translation_key="water_ecoli",
+        icon="mdi:bacteria-outline",
+        native_unit_of_measurement="n/100mL",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_fn=lambda suez_data: suez_data.quality.ecoli if suez_data.quality else None,
     ),
 )
 

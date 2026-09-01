@@ -56,6 +56,27 @@
       },
       "yesterday_total_cost": {
         "name": "Coût total de la veille"
+      },
+      "water_quality_status": {
+        "name": "Qualité de l'eau - Statut global"
+      },
+      "water_ph": {
+        "name": "Qualité de l'eau - pH"
+      },
+      "water_temperature": {
+        "name": "Qualité de l'eau - Température"
+      },
+      "water_nitrates": {
+        "name": "Qualité de l'eau - Nitrates"
+      },
+      "water_hardness": {
+        "name": "Qualité de l'eau - Dureté"
+      },
+      "water_free_chlorine": {
+        "name": "Qualité de l'eau - Chlore libre"
+      },
+      "water_ecoli": {
+        "name": "Qualité de l'eau - E. Coli"
       }
     }
   }

@@ -56,6 +56,19 @@ class SuezWaterAggregatedAttributes:
     highest_monthly_consumption: float
 
 @dataclass
+class SuezWaterQualityData:
+    """Class containing drinking water quality parameters from Hub'Eau / ARS."""
+    status: str | None = None
+    sample_date: str | None = None
+    commune_name: str | None = None
+    ph: float | None = None
+    temperature: float | None = None
+    nitrates: float | None = None
+    hardness: float | None = None
+    free_chlorine: float | None = None
+    ecoli: float | None = None
+
+@dataclass
 class SuezWaterData:
     """Class used to hold all fetch data from suez api."""
     aggregated_value: float | None
@@ -69,6 +82,7 @@ class SuezWaterData:
     subscription_sanitation: float | None = None
     daily_subscription_cost: float | None = None
     yesterday_total_cost: float | None = None
+    quality: SuezWaterQualityData | None = None
 
 type SuezWaterConfigEntry = ConfigEntry[SuezWaterCoordinator]
 
@@ -293,7 +307,18 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             sub_part = daily_subscription_cost or 0.0
             yesterday_total_cost = round(water_part + sub_part, 2)
 
-        # 8. Dynamically adjust update interval
+        # 8. Water Quality (Hub'Eau open data / ARS)
+        water_quality = None
+        try:
+            insee_code = await self._async_get_insee_code()
+            if insee_code:
+                water_quality = await self._async_fetch_water_quality(insee_code)
+        except Exception as err:
+            _LOGGER.debug("Could not fetch water quality: %s", err)
+            if self.data and self.data.quality:
+                water_quality = self.data.quality
+
+        # 9. Dynamically adjust update interval
         now = dt_util.now()
         if not yesterday_data_available:
             if self.update_interval != FAST_DATA_REFRESH_INTERVAL:
@@ -322,6 +347,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             subscription_sanitation=subscription_sanitation,
             daily_subscription_cost=daily_subscription_cost,
             yesterday_total_cost=yesterday_total_cost,
+            quality=water_quality,
         )
 
     async def _async_update_statistics(
@@ -657,4 +683,65 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             return None
         except Exception as err:
             _LOGGER.debug("Could not automatically discover commune pricing URL: %s", err)
+            return None
+
+    async def _async_get_insee_code(self) -> str | None:
+        """Get INSEE code from contract or options."""
+        try:
+            contract = await self._suez_client.contract_data()
+            if contract and getattr(contract, "inseeCode", None):
+                return str(contract.inseeCode)
+        except Exception:
+            pass
+        return None
+
+    async def _async_fetch_water_quality(self, insee_code: str) -> SuezWaterQualityData | None:
+        """Fetch drinking water quality from Hub'Eau open API (ARS)."""
+        try:
+            url = f"https://hubeau.eaufrance.fr/api/v1/qualite_eau_potable/resultats_dis?code_commune={insee_code}&size=50&sort=desc"
+            session = async_get_clientsession(self.hass)
+            async with session.get(url, timeout=10) as resp:
+                if resp.status != 200:
+                    _LOGGER.warning("Hub'Eau API returned HTTP %s for commune %s", resp.status, insee_code)
+                    return None
+                json_data = await resp.json()
+                rows = json_data.get("data", [])
+                if not rows:
+                    return None
+
+                first = rows[0]
+                sample_date = first.get("date_prelevement")
+                conclusion = first.get("conclusion_conformite_prelevement") or ""
+                if "conforme" in conclusion.lower() and "non" not in conclusion.lower():
+                    status = "Conforme"
+                elif conclusion:
+                    status = "Non conforme"
+                else:
+                    status = "Indisponible"
+                commune_name = first.get("nom_commune")
+
+                params: dict[str, float] = {}
+                for r in rows:
+                    lib = r.get("libelle_parametre")
+                    val = r.get("resultat_numerique")
+                    if lib and val is not None and lib not in params:
+                        try:
+                            params[lib] = float(val)
+                        except (ValueError, TypeError):
+                            pass
+
+                _LOGGER.info("Fetched water quality for %s (%s): status=%s, pH=%s, nitrates=%s, hardness=%s", commune_name, insee_code, status, params.get("pH"), params.get("Nitrates (en NO3)"), params.get("Titre hydrotimétrique"))
+                return SuezWaterQualityData(
+                    status=status,
+                    sample_date=sample_date,
+                    commune_name=commune_name,
+                    ph=params.get("pH"),
+                    temperature=params.get("Température de l'eau"),
+                    nitrates=params.get("Nitrates (en NO3)"),
+                    hardness=params.get("Titre hydrotimétrique"),
+                    free_chlorine=params.get("Chlore libre"),
+                    ecoli=params.get("Escherichia coli /100ml - MF"),
+                )
+        except Exception as err:
+            _LOGGER.warning("Error fetching water quality from Hub'Eau for commune %s: %s", insee_code, err)
             return None
