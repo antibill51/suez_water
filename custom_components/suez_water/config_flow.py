@@ -12,12 +12,19 @@ from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
     ConfigEntry,
+    OptionsFlow,
     SOURCE_REAUTH,
 )
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import CONF_COUNTER_ID, DOMAIN
+from .const import (
+    CONF_COUNTER_ID,
+    CONF_PRICE_OVERRIDE,
+    CONF_YEARLY_SUBSCRIPTION,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -173,6 +180,44 @@ class SuezWaterConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reconfigure_confirm", data_schema=reconfigure_schema, errors=errors
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> OptionsFlow:
+        """Get the options flow for this handler."""
+        return SuezWaterOptionsFlow()
+
+
+class SuezWaterOptionsFlow(OptionsFlow):
+    """Handle options flow for Suez Water."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options = self.config_entry.options
+        data_schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_YEARLY_SUBSCRIPTION,
+                    default=options.get(CONF_YEARLY_SUBSCRIPTION, 0.0),
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_PRICE_OVERRIDE,
+                    default=options.get(CONF_PRICE_OVERRIDE, 0.0),
+                ): vol.Coerce(float),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=data_schema,
         )
 
 

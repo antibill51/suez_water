@@ -1,8 +1,7 @@
-"""Suez water update coordinator."""
-
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import asyncio
+import calendar
 import logging
 
 from pysuez import PySuezError, SuezClient, TelemetryMeasure
@@ -32,6 +31,8 @@ import homeassistant.util.dt as dt_util
 
 from .const import (
     CONF_COUNTER_ID,
+    CONF_PRICE_OVERRIDE,
+    CONF_YEARLY_SUBSCRIPTION,
     DATA_REFRESH_INTERVAL,
     DOMAIN,
     FAST_DATA_REFRESH_INTERVAL,
@@ -59,6 +60,8 @@ class SuezWaterData:
     last_index: float | None
     last_index_date: date | None
     last_update_attempt: datetime | None
+    daily_subscription_cost: float | None = None
+    yesterday_total_cost: float | None = None
 
 type SuezWaterConfigEntry = ConfigEntry[SuezWaterCoordinator]
 
@@ -101,6 +104,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                     return
                 raise ConfigEntryAuthFailed("Invalid credentials for suez water")
             except PySuezError as err:
+                if "Authentication failed" in str(err) or "401" in str(err):
+                    raise ConfigEntryAuthFailed from err
                 if attempt < max_attempts:
                     delay = 5 * attempt
                     _LOGGER.warning("Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s", attempt, max_attempts, delay, err)
@@ -120,51 +125,49 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             aggregated = await self._suez_client.fetch_aggregated_data()
             _LOGGER.info("Fetched aggregated data: %s", aggregated)
         except PySuezError as err:
-            if "503" in str(err):
-                raise UpdateFailed("Failed to fetch aggregated data, service unavailable") from err
-            if "Authentication failed" in str(err):
-                raise ConfigEntryAuthFailed from err
+            if "503" in str(err) or "500" in str(err) or "502" in str(err):
+                raise UpdateFailed(f"Suez service unavailable ({err})") from err
             _LOGGER.warning("Could not fetch aggregated data: %s", err)
 
+        # 1. Price (from options override or API)
         price = None
-        try:
-            price_data = await self._suez_client.get_price()
-            price = price_data.price
-            _LOGGER.info("Fetched water price: %s", price)
-        except PySuezError as err:
-            if "503" in str(err):
-                raise UpdateFailed("Failed to fetch water price, service unavailable") from err
-            if "Authentication failed" in str(err):
-                raise ConfigEntryAuthFailed from err
-            _LOGGER.warning(
-                "Failed to fetch water price. Cost statistics will not be updated.",
-                exc_info=True,
-            )
+        price_override = float(self.config_entry.options.get(CONF_PRICE_OVERRIDE, 0.0))
+        if price_override > 0.0:
+            price = price_override
+            _LOGGER.info("Using configured water price override: %s €/m³", price)
+        else:
+            try:
+                price_data = await self._suez_client.get_price()
+                price = price_data.price
+                _LOGGER.info("Fetched water price from API: %s €/m³", price)
+            except PySuezError as err:
+                _LOGGER.warning("Failed to fetch water price from API: %s", err)
 
+        # 2. Fetch daily usage with a 3-day safety overlap
         water_last_stat = await self._get_last_stat(self._water_statistic_id)
         if not water_last_stat:
             _LOGGER.info("First run: performing full history import.")
             fetch_since = None
         else:
             last_stats_date = datetime.fromtimestamp(water_last_stat["start"]).date()
-            _LOGGER.debug("Incremental update since %s", last_stats_date)
-            fetch_since = last_stats_date
+            fetch_since = last_stats_date - timedelta(days=3)
+            _LOGGER.debug("Incremental update since %s (overlap: %s)", last_stats_date, fetch_since)
 
+        daily_usage = []
         try:
             daily_usage = await self._suez_client.fetch_all_daily_data(
                 since=fetch_since
             )
             _LOGGER.info("Fetched %d daily usage entries.", len(daily_usage))
-            _LOGGER.info("Fetched daily usage data: %s", daily_usage)
+            _LOGGER.debug("Fetched daily usage data: %s", daily_usage)
         except PySuezError as err:
-            if "503" in str(err):
-                raise UpdateFailed("Failed to fetch daily suez water data, service unavailable") from err
-            if "Authentication failed" in str(err):
-                raise ConfigEntryAuthFailed from err
-            raise UpdateFailed("Failed to fetch daily suez water data") from err
+            if "503" in str(err) or "500" in str(err):
+                raise UpdateFailed(f"Failed to fetch daily suez water data: {err}") from err
+            _LOGGER.warning("Failed to fetch daily usage: %s", err)
 
+        # 3. Update statistics
         if not daily_usage or not any(m.index is not None for m in daily_usage):
-            _LOGGER.debug("No recent usage data. Skipping statistics update")
+            _LOGGER.debug("No new daily index data for statistics update.")
         else:
             try:
                 await self._async_update_statistics(price, daily_usage, water_last_stat)
@@ -174,10 +177,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         if daily_usage:
             daily_usage.sort(key=lambda m: m.date)
 
+        # 4. Aggregated data formatting
         aggregated_value = None
         aggregated_attr = None
         if aggregated:
-            _LOGGER.debug("Successfully fetched suez aggregated data")
+            _LOGGER.debug("Successfully processed suez aggregated data")
             aggregated_value = aggregated.value
             aggregated_attr = SuezWaterAggregatedAttributes(
                 this_month_consumption=map_dict(aggregated.current_month),
@@ -188,20 +192,22 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 history=map_dict(aggregated.history),
             )
 
+        # 5. Extract yesterday's consumption with robust fallbacks
         yesterday_consumption = None
         last_index = None
         last_index_date = None
         yesterday_data_available = False
 
+        today = dt_util.now().date()
+        yesterday_dt = today - timedelta(days=1)
+
+        # A. Check in daily_usage
         if daily_usage:
             measures_with_index = [m for m in daily_usage if m.index is not None]
             if measures_with_index:
                 latest_measure_with_index = measures_with_index[-1]
                 last_index = latest_measure_with_index.index
                 last_index_date = latest_measure_with_index.date
-
-            today = dt_util.now().date()
-            yesterday_dt = today - timedelta(days=1)
 
             yesterday_measure = next(
                 (m for m in daily_usage if m.date == yesterday_dt), None
@@ -210,8 +216,42 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             if yesterday_measure and yesterday_measure.volume is not None:
                 yesterday_consumption = yesterday_measure.volume
                 yesterday_data_available = True
-                _LOGGER.debug("Yesterday consumption found directly via volume: %s L", yesterday_consumption)
+                _LOGGER.debug("Yesterday consumption found via daily_usage: %s L", yesterday_consumption)
 
+        # B. Fallback to aggregated data if yesterday is not in daily_usage
+        if not yesterday_data_available and aggregated:
+            val = None
+            if aggregated.current_month and yesterday_dt in aggregated.current_month:
+                val = aggregated.current_month[yesterday_dt]
+            elif aggregated.previous_month and yesterday_dt in aggregated.previous_month:
+                val = aggregated.previous_month[yesterday_dt]
+
+            if val is not None:
+                yesterday_consumption = val
+                yesterday_data_available = True
+                _LOGGER.debug("Yesterday consumption found via aggregated fallback: %s L", yesterday_consumption)
+
+        # C. Preserve last known meter index if not returned in current incremental fetch
+        if last_index is None and self.data and self.data.last_index is not None:
+            last_index = self.data.last_index
+            last_index_date = self.data.last_index_date
+            _LOGGER.debug("Preserved previous last_index: %s (%s)", last_index, last_index_date)
+
+        # 6. Calculate fixed subscription and daily costs
+        yearly_sub = float(self.config_entry.options.get(CONF_YEARLY_SUBSCRIPTION, 0.0))
+        daily_subscription_cost = None
+        yesterday_total_cost = None
+        if yearly_sub > 0.0:
+            now_dt = dt_util.now()
+            days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
+            daily_subscription_cost = round((yearly_sub / 12.0) / days_in_month, 4)
+
+        if yesterday_consumption is not None and price is not None:
+            water_part = (yesterday_consumption / 1000.0) * price
+            sub_part = daily_subscription_cost or 0.0
+            yesterday_total_cost = round(water_part + sub_part, 2)
+
+        # 7. Dynamically adjust update interval
         now = dt_util.now()
         if not yesterday_data_available:
             if self.update_interval != FAST_DATA_REFRESH_INTERVAL:
@@ -222,10 +262,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 self.update_interval = FAST_DATA_REFRESH_INTERVAL
         else:
             tomorrow = now.date() + timedelta(days=1)
-            next_update_time = dt_util.start_of_local_day(tomorrow)
-            new_interval = next_update_time - now
+            # Schedule next update at 06:00 tomorrow morning (when Suez meters transmit daily data)
+            next_update_time = dt_util.start_of_local_day(tomorrow) + timedelta(hours=6)
+            new_interval = max(next_update_time - now, timedelta(hours=6))
             self.update_interval = new_interval
-            _LOGGER.info("Yesterday's data is available. Scheduling next update at %s (in %s).", next_update_time, new_interval)
+            _LOGGER.info("Yesterday's data is available (%s L). Scheduling next update at %s (in %s).", yesterday_consumption, next_update_time, new_interval)
 
         return SuezWaterData(
             aggregated_value=aggregated_value,
@@ -235,6 +276,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             last_index=last_index,
             last_index_date=last_index_date,
             last_update_attempt=last_update_attempt_dt,
+            daily_subscription_cost=daily_subscription_cost,
+            yesterday_total_cost=yesterday_total_cost,
         )
 
     async def _async_update_statistics(
@@ -311,23 +354,20 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             )
 
             if current_price is not None:
-                previous_index = last_index
-                if i > 0:
-                    previous_index = sorted_usage[i-1].index
-
-                if previous_index is None:
-                    daily_consumption = 0.0
+                if data.volume is not None:
+                    daily_consumption = float(data.volume)
                 else:
-                    daily_consumption = data.index - previous_index
+                    previous_index = last_index
+                    if i > 0:
+                        previous_index = sorted_usage[i-1].index
+                    daily_consumption = (data.index - previous_index) if previous_index is not None else 0.0
 
                 daily_cost = (daily_consumption / 1000) * current_price
 
-                if last_total_cost is None and i == 0:
+                if last_total_cost is None:
                     total_cost = daily_cost
-                elif last_total_cost is not None:
-                    total_cost = last_total_cost + daily_cost
                 else:
-                    continue
+                    total_cost = last_total_cost + daily_cost
 
                 cost_statistics.append(
                     StatisticData(
@@ -399,7 +439,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         if self._first_water_index is not None:
             return self._first_water_index
 
-        start_date = datetime(1971, 1, 1)
+        start_date = dt_util.as_utc(datetime(1971, 1, 1, 0, 0, 0))
         first_stat_list = await get_instance(self.hass).async_add_executor_job(
             statistics_during_period,
             self.hass,
