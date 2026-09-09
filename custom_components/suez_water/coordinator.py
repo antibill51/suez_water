@@ -57,7 +57,7 @@ class SuezWaterAggregatedAttributes:
 
 @dataclass
 class SuezWaterQualityData:
-    """Class containing drinking water quality parameters from Hub'Eau / ARS."""
+    """Class containing drinking water quality parameters from Hub'Eau / ARS and Tout sur mon eau."""
     status: str | None = None
     conclusion: str | None = None
     sample_date: str | None = None
@@ -67,7 +67,22 @@ class SuezWaterQualityData:
     nitrates: float | None = None
     hardness: float | None = None
     free_chlorine: float | None = None
+    total_chlorine: float | None = None
     ecoli: float | None = None
+    conductivity: float | None = None
+    sulfates: float | None = None
+    chlorides: float | None = None
+    calcium: float | None = None
+    magnesium: float | None = None
+    sodium: float | None = None
+    potassium: float | None = None
+    bicarbonates: float | None = None
+    fluor: float | None = None
+    pesticides_total: float | None = None
+    pesticides_analyses: int | None = None
+    nitrates_analyses: int | None = None
+    bacterio_analyses: int | None = None
+    quality_url: str | None = None
 
 @dataclass
 class SuezWaterData:
@@ -320,7 +335,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             insee_code = await self._async_get_insee_code()
 
         if insee_code:
-            water_quality = await self._async_fetch_water_quality(insee_code)
+            water_quality = await self._async_fetch_water_quality(insee_code, commune_url)
 
         if not water_quality and self.data and self.data.quality:
             water_quality = self.data.quality
@@ -702,54 +717,217 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             pass
         return None
 
-    async def _async_fetch_water_quality(self, insee_code: str) -> SuezWaterQualityData | None:
-        """Fetch drinking water quality from Hub'Eau open API (ARS)."""
+    async def _async_discover_commune_quality_url(self) -> str | None:
+        """Automatically discover the public Tout sur mon eau commune quality page URL."""
+        try:
+            brand_url = await self._async_get_brand_url()
+            insee = await self._async_get_insee_code()
+            contract = await self._suez_client.contract_data()
+            city = None
+
+            try:
+                meters = await self._suez_client.meter_data()
+                if (
+                    meters
+                    and meters.content
+                    and meters.content.clientCompteursPro
+                    and len(meters.content.clientCompteursPro) > 0
+                    and len(meters.content.clientCompteursPro[0].compteursPro) > 0
+                ):
+                    meter_pro = meters.content.clientCompteursPro[0].compteursPro[0]
+                    city = getattr(meter_pro, "villeDesserte", None)
+            except Exception:
+                pass
+
+            if not city and contract and getattr(contract, "addrServed", None):
+                city = contract.addrServed.split(",")[-1].strip()
+
+            if not insee:
+                return None
+
+            def _slugify(val: str) -> str:
+                val = unicodedata.normalize("NFKD", val).encode("ascii", "ignore").decode("ascii")
+                val = re.sub(r"[^\w\s-]", "", val).strip().lower()
+                return re.sub(r"[-\s]+", "-", val)
+
+            candidates = []
+            if city:
+                slug_city = _slugify(city)
+                candidates.append(f"{brand_url}/eau-dans-ma-commune/{slug_city}-{insee}/qualite-de-l-eau")
+                if "toutsurmoneau.fr" not in brand_url:
+                    candidates.append(f"https://www.toutsurmoneau.fr/eau-dans-ma-commune/{slug_city}-{insee}/qualite-de-l-eau")
+            else:
+                candidates.append(f"{brand_url}/eau-dans-ma-commune/{insee}/qualite-de-l-eau")
+                candidates.append(f"https://www.toutsurmoneau.fr/eau-dans-ma-commune/{insee}/qualite-de-l-eau")
+
+            session = async_get_clientsession(self.hass)
+            for candidate in candidates:
+                try:
+                    async with session.get(candidate, timeout=10) as resp:
+                        if resp.status == 200:
+                            _LOGGER.info("Successfully discovered commune quality URL automatically: %s", candidate)
+                            return candidate
+                except Exception:
+                    continue
+            return None
+        except Exception as err:
+            _LOGGER.debug("Could not automatically discover commune quality URL: %s", err)
+            return None
+
+    async def _async_fetch_water_quality(
+        self, insee_code: str, commune_url: str | None = None
+    ) -> SuezWaterQualityData | None:
+        """Fetch drinking water quality from Hub'Eau open API (ARS) and Tout sur mon eau (minerals)."""
+        session = async_get_clientsession(self.hass)
+        hubeau_params: dict[str, float] = {}
+        status = "Indisponible"
+        conclusion = ""
+        sample_date = None
+        commune_name = None
+
+        # 1. Hub'Eau open API (ARS health sampling)
         try:
             url = f"https://hubeau.eaufrance.fr/api/v1/qualite_eau_potable/resultats_dis?code_commune={insee_code}&size=50&sort=desc"
-            session = async_get_clientsession(self.hass)
             async with session.get(url, timeout=10) as resp:
-                if resp.status not in (200, 206):
-                    _LOGGER.warning("Hub'Eau API returned HTTP %s for commune %s", resp.status, insee_code)
-                    return None
-                json_data = await resp.json(content_type=None)
-                rows = json_data.get("data", [])
-                if not rows:
-                    return None
+                if resp.status in (200, 206):
+                    json_data = await resp.json(content_type=None)
+                    rows = json_data.get("data", [])
+                    if rows:
+                        first = rows[0]
+                        sample_date = first.get("date_prelevement")
+                        conclusion = first.get("conclusion_conformite_prelevement") or ""
+                        if "conforme" in conclusion.lower() and "non" not in conclusion.lower():
+                            status = "Conforme"
+                        elif conclusion:
+                            status = "Non conforme"
+                        else:
+                            status = "Indisponible"
+                        commune_name = first.get("nom_commune")
 
-                first = rows[0]
-                sample_date = first.get("date_prelevement")
-                conclusion = first.get("conclusion_conformite_prelevement") or ""
-                if "conforme" in conclusion.lower() and "non" not in conclusion.lower():
-                    status = "Conforme"
-                elif conclusion:
-                    status = "Non conforme"
+                        for r in rows:
+                            lib = r.get("libelle_parametre")
+                            val = r.get("resultat_numerique")
+                            if lib and val is not None and lib not in hubeau_params:
+                                try:
+                                    fval = float(val)
+                                    # Round to standard precision to prevent float jitter in recorder statistics
+                                    if any(k in lib for k in ("Température", "hydrotimétrique", "Sulfates", "Chlorures")):
+                                        hubeau_params[lib] = round(fval, 1)
+                                    elif any(k in lib for k in ("coli", "Conductivité")):
+                                        hubeau_params[lib] = round(fval, 0)
+                                    else:
+                                        hubeau_params[lib] = round(fval, 2)
+                                except (ValueError, TypeError):
+                                    pass
                 else:
-                    status = "Indisponible"
-                commune_name = first.get("nom_commune")
-
-                params: dict[str, float] = {}
-                for r in rows:
-                    lib = r.get("libelle_parametre")
-                    val = r.get("resultat_numerique")
-                    if lib and val is not None and lib not in params:
-                        try:
-                            params[lib] = float(val)
-                        except (ValueError, TypeError):
-                            pass
-
-                _LOGGER.info("Fetched water quality for %s (%s): status=%s, pH=%s, nitrates=%s, hardness=%s", commune_name, insee_code, status, params.get("pH"), params.get("Nitrates (en NO3)"), params.get("Titre hydrotimétrique"))
-                return SuezWaterQualityData(
-                    status=status,
-                    conclusion=conclusion,
-                    sample_date=sample_date,
-                    commune_name=commune_name,
-                    ph=params.get("pH"),
-                    temperature=params.get("Température de l'eau"),
-                    nitrates=params.get("Nitrates (en NO3)"),
-                    hardness=params.get("Titre hydrotimétrique"),
-                    free_chlorine=params.get("Chlore libre"),
-                    ecoli=params.get("Escherichia coli /100ml - MF"),
-                )
+                    _LOGGER.warning("Hub'Eau API returned HTTP %s for commune %s", resp.status, insee_code)
         except Exception as err:
             _LOGGER.warning("Error fetching water quality from Hub'Eau for commune %s: %s", insee_code, err)
+
+        # 2. Tout sur mon eau ("L'étiquette de l'eau" / Minerals & 12-month synthesis)
+        minerals: dict[str, float] = {}
+        synthesis: dict[str, Any] = {}
+        quality_url = None
+
+        if commune_url and "prix-de-l-eau" in commune_url:
+            quality_url = commune_url.replace("prix-de-l-eau", "qualite-de-l-eau")
+
+        if not quality_url:
+            quality_url = await self._async_discover_commune_quality_url()
+
+        if quality_url:
+            try:
+                async with session.get(quality_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        soup = BeautifulSoup(html, "html.parser")
+                        # Parse minerals list (L'étiquette de l'eau)
+                        for li in soup.find_all("li"):
+                            name_el = li.find(class_="name")
+                            val_el = li.find(class_="value")
+                            if name_el and val_el:
+                                k = name_el.get_text(strip=True).lower()
+                                v = val_el.get_text(strip=True).replace(",", ".")
+                                try:
+                                    fval = float(v)
+                                    if k in ("fluor",):
+                                        minerals[k] = round(fval, 3)
+                                    elif k in ("bicarbonates", "chlorures"):
+                                        minerals[k] = round(fval, 1)
+                                    else:
+                                        minerals[k] = round(fval, 2)
+                                except ValueError:
+                                    pass
+
+                        # Parse 12-month synthesis
+                        for row in soup.find_all(class_="data-statistic"):
+                            t_el = row.find(class_="title")
+                            d_el = row.find(class_="description")
+                            c_el = row.find(class_="circle-value")
+                            if t_el:
+                                title = t_el.get_text(strip=True).upper()
+                                analyses = None
+                                val = None
+                                if c_el:
+                                    m = re.search(r"\d+", c_el.get_text())
+                                    if m:
+                                        analyses = int(m.group(0))
+                                if d_el:
+                                    sp = d_el.find("span")
+                                    if sp:
+                                        try:
+                                            val = round(float(sp.get_text(strip=True).replace(",", ".")), 3)
+                                        except ValueError:
+                                            pass
+                                synthesis[title] = {"value": val, "analyses": analyses}
+            except Exception as err:
+                _LOGGER.debug("Could not fetch water minerals from Tout sur mon eau (%s): %s", quality_url, err)
+
+        if not sample_date and not minerals:
             return None
+
+        new_quality = SuezWaterQualityData(
+            status=status,
+            conclusion=conclusion,
+            sample_date=sample_date,
+            commune_name=commune_name,
+            ph=hubeau_params.get("pH"),
+            temperature=hubeau_params.get("Température de l'eau"),
+            nitrates=hubeau_params.get("Nitrates (en NO3)"),
+            hardness=hubeau_params.get("Titre hydrotimétrique"),
+            free_chlorine=hubeau_params.get("Chlore libre"),
+            total_chlorine=hubeau_params.get("Chlore total"),
+            ecoli=hubeau_params.get("Escherichia coli /100ml - MF"),
+            conductivity=hubeau_params.get("Conductivité à 25°C"),
+            sulfates=hubeau_params.get("Sulfates"),
+            chlorides=minerals.get("chlorures", hubeau_params.get("Chlorures")),
+            calcium=minerals.get("calcium"),
+            magnesium=minerals.get("magnesium"),
+            sodium=minerals.get("sodium"),
+            potassium=minerals.get("potassium"),
+            bicarbonates=minerals.get("bicarbonates"),
+            fluor=minerals.get("fluor"),
+            pesticides_total=synthesis.get("PESTICIDES", {}).get("value"),
+            pesticides_analyses=synthesis.get("PESTICIDES", {}).get("analyses"),
+            nitrates_analyses=synthesis.get("NITRATE", {}).get("analyses"),
+            bacterio_analyses=synthesis.get("QUALITÉ BACTÉRIOLOGIQUE", {}).get("analyses"),
+            quality_url=quality_url,
+        )
+
+        # Reuse existing quality object if identical
+        if self.data and self.data.quality and self.data.quality == new_quality:
+            return self.data.quality
+
+        _LOGGER.info(
+            "Fetched water quality for %s (%s): status=%s, pH=%s, hardness=%s, Ca=%s, Mg=%s, pesticides=%s",
+            commune_name,
+            insee_code,
+            status,
+            new_quality.ph,
+            new_quality.hardness,
+            new_quality.calcium,
+            new_quality.magnesium,
+            new_quality.pesticides_total,
+        )
+        return new_quality
+

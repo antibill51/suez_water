@@ -76,8 +76,41 @@
       "water_free_chlorine": {
         "name": "Qualité de l'eau - Chlore libre"
       },
+      "water_total_chlorine": {
+        "name": "Qualité de l'eau - Chlore total"
+      },
       "water_ecoli": {
         "name": "Qualité de l'eau - E. Coli"
+      },
+      "water_calcium": {
+        "name": "Qualité de l'eau - Calcium"
+      },
+      "water_magnesium": {
+        "name": "Qualité de l'eau - Magnésium"
+      },
+      "water_sodium": {
+        "name": "Qualité de l'eau - Sodium"
+      },
+      "water_potassium": {
+        "name": "Qualité de l'eau - Potassium"
+      },
+      "water_bicarbonates": {
+        "name": "Qualité de l'eau - Bicarbonates"
+      },
+      "water_fluor": {
+        "name": "Qualité de l'eau - Fluor"
+      },
+      "water_chlorides": {
+        "name": "Qualité de l'eau - Chlorures"
+      },
+      "water_sulfates": {
+        "name": "Qualité de l'eau - Sulfates"
+      },
+      "water_conductivity": {
+        "name": "Qualité de l'eau - Conductivité"
+      },
+      "water_pesticides_total": {
+        "name": "Qualité de l'eau - Pesticides"
       }
     }
   }
