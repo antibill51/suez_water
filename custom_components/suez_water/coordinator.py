@@ -208,15 +208,31 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                     price = commune_prices["total_price_m3"]
                     _LOGGER.info("Using water price fallback from commune page: %s €/m³", price)
 
+        if price is None and self.data and self.data.price is not None:
+            price = self.data.price
+            _LOGGER.debug("Preserved previous water price: %s €/m³", price)
+
+        if not commune_prices and self.data:
+            if self.data.subscription_water is not None:
+                subscription_water = self.data.subscription_water
+            if self.data.subscription_sanitation is not None:
+                subscription_sanitation = self.data.subscription_sanitation
+
         # 3. Fetch daily usage with a 3-day safety overlap
         water_last_stat = await self._get_last_stat(self._water_statistic_id)
+        cost_last_stat = await self._get_last_stat(self._cost_statistic_id)
         if not water_last_stat:
             _LOGGER.info("First run: performing full history import.")
             fetch_since = None
+        elif not cost_last_stat:
+            _LOGGER.info("Missing cost statistics: performing full history import.")
+            fetch_since = None
         else:
-            last_stats_date = datetime.fromtimestamp(water_last_stat["start"]).date()
-            fetch_since = last_stats_date - timedelta(days=3)
-            _LOGGER.debug("Incremental update since %s (overlap: %s)", last_stats_date, fetch_since)
+            water_stats_date = datetime.fromtimestamp(water_last_stat["start"]).date()
+            cost_stats_date = datetime.fromtimestamp(cost_last_stat["start"]).date()
+            earliest_date = min(water_stats_date, cost_stats_date)
+            fetch_since = earliest_date - timedelta(days=3)
+            _LOGGER.debug("Incremental update since %s (overlap: %s)", earliest_date, fetch_since)
 
         daily_usage = []
         try:
@@ -235,7 +251,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             _LOGGER.debug("No new daily index data for statistics update.")
         else:
             try:
-                await self._async_update_statistics(price, daily_usage, water_last_stat)
+                await self._async_update_statistics(price, daily_usage, water_last_stat, cost_last_stat)
             except Exception as err:
                 raise UpdateFailed("Failed to update suez water statistics") from err
 
@@ -308,6 +324,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             yearly_sub = manual_sub
         elif commune_prices and commune_prices.get("total_subscription_yearly"):
             yearly_sub = commune_prices["total_subscription_yearly"]
+        elif subscription_water is not None and subscription_sanitation is not None:
+            yearly_sub = round(subscription_water + subscription_sanitation, 2)
+        elif self.data and self.data.daily_subscription_cost is not None:
+            yearly_sub = 0.0
+            daily_subscription_cost = self.data.daily_subscription_cost
         else:
             yearly_sub = 0.0
 
@@ -317,6 +338,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             now_dt = dt_util.now()
             days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
             daily_subscription_cost = round((yearly_sub / 12.0) / days_in_month, 4)
+        elif self.data and self.data.daily_subscription_cost is not None:
+            daily_subscription_cost = self.data.daily_subscription_cost
 
         if yesterday_consumption is not None and price is not None:
             water_part = (yesterday_consumption / 1000.0) * price
@@ -376,11 +399,12 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         self,
         current_price: float | None,
         usage: list[TelemetryMeasure],
-        last_stat: StatisticsRow | None,
+        water_last_stat: StatisticsRow | None,
+        cost_last_stat: StatisticsRow | None = None,
     ) -> None:
         """Update daily statistics."""
         try:
-            await self._do_async_update_statistics(current_price, usage, last_stat)
+            await self._do_async_update_statistics(current_price, usage, water_last_stat, cost_last_stat)
         except Exception:
             _LOGGER.exception("Unexpected error while updating statistics")
             raise
@@ -389,13 +413,14 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         self,
         current_price: float | None,
         usage: list[TelemetryMeasure],
-        last_stat: StatisticsRow | None,
+        water_last_stat: StatisticsRow | None,
+        cost_last_stat: StatisticsRow | None = None,
     ) -> None:
         _LOGGER.debug("Updating statistics for %s", self._water_statistic_id)
         _LOGGER.debug("Got %d daily measures to process for statistics", len(usage))
 
         consumption_statistics, cost_statistics = await self._async_build_statistics(
-            current_price, usage, last_stat
+            current_price, usage, water_last_stat, cost_last_stat
         )
 
         self._persist_statistics(consumption_statistics, cost_statistics)
@@ -404,7 +429,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
         self,
         current_price: float | None,
         usage: list[TelemetryMeasure],
-        last_stat: StatisticsRow | None,
+        water_last_stat: StatisticsRow | None,
+        cost_last_stat: StatisticsRow | None = None,
     ) -> tuple[list[StatisticData], list[StatisticData]]:
         """Build statistics data from fetched data."""
         consumption_statistics = []
@@ -412,48 +438,34 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
 
         sorted_usage = sorted([m for m in usage if m.index is not None], key=lambda m: m.date)
 
-        last_stats_date = datetime.fromtimestamp(last_stat["start"]).date() if last_stat else None
-        last_index = last_stat["state"] if last_stat else None
-        last_sum = last_stat["sum"] if last_stat else None
-        last_total_cost = None
+        last_water_date = datetime.fromtimestamp(water_last_stat["start"]).date() if water_last_stat else None
+        last_cost_date = datetime.fromtimestamp(cost_last_stat["start"]).date() if cost_last_stat else None
+        last_total_cost = cost_last_stat["sum"] if cost_last_stat else None
 
         first_index = await self._get_first_water_index(sorted_usage)
         if first_index is None:
             _LOGGER.warning("Could not determine the first meter index. Statistics might be incorrect.")
             return [], []
 
-        if current_price is not None:
-            last_cost_stat = await self._get_last_stat(self._cost_statistic_id)
-            if last_cost_stat:
-                last_total_cost = last_cost_stat["sum"]
-
         for i, data in enumerate(sorted_usage):
-            if (
-                data.volume is None or (last_stats_date and data.date <= last_stats_date)
-            ):
+            if data.volume is None:
                 continue
 
             consumption_date = dt_util.start_of_local_day(data.date)
-            state = data.index
-            sum_value = data.index - first_index
 
-            consumption_statistics.append(
-                StatisticData(
-                    start=consumption_date,
-                    state=state,
-                    sum=sum_value,
+            if not (last_water_date and data.date <= last_water_date):
+                state = data.index
+                sum_value = data.index - first_index
+                consumption_statistics.append(
+                    StatisticData(
+                        start=consumption_date,
+                        state=state,
+                        sum=sum_value,
+                    )
                 )
-            )
 
-            if current_price is not None:
-                if data.volume is not None:
-                    daily_consumption = float(data.volume)
-                else:
-                    previous_index = last_index
-                    if i > 0:
-                        previous_index = sorted_usage[i-1].index
-                    daily_consumption = (data.index - previous_index) if previous_index is not None else 0.0
-
+            if current_price is not None and not (last_cost_date and data.date <= last_cost_date):
+                daily_consumption = float(data.volume)
                 daily_cost = (daily_consumption / 1000) * current_price
 
                 if last_total_cost is None:
@@ -469,7 +481,6 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                     )
                 )
                 last_total_cost = total_cost
-            last_index = data.index
 
         return consumption_statistics, cost_statistics
 
