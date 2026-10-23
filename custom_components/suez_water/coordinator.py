@@ -26,8 +26,7 @@ from homeassistant.const import (
     UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.unit_conversion import VolumeConverter
@@ -134,22 +133,41 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
     async def _async_setup(self) -> None:
         """Check credentials with a retry mechanism."""
         max_attempts = 3
+        last_exception = None
         for attempt in range(1, max_attempts + 1):
             try:
-                if await self._suez_client.check_credentials():
+                # Direct check via _connect to preserve original exception details
+                try:
+                    await self._suez_client._connect()
                     _LOGGER.debug("Successfully connected to Suez API.")
                     return
-                raise ConfigEntryAuthFailed("Invalid credentials for suez water")
-            except PySuezError as err:
-                if "Authentication failed" in str(err) or "401" in str(err):
-                    raise ConfigEntryAuthFailed from err
+                finally:
+                    await self._suez_client.close_session()
+            except Exception as err:
+                last_exception = err
+                err_str = str(err)
+                # Check for explicit invalid credentials message from pySuez
+                if "check your username/password" in err_str.lower() or "401" in err_str:
+                    _LOGGER.error("Suez authentication rejected: %s", err)
+                    raise ConfigEntryAuthFailed("Invalid credentials for suez water") from err
+
                 if attempt < max_attempts:
                     delay = 5 * attempt
-                    _LOGGER.warning("Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s", attempt, max_attempts, delay, err)
+                    _LOGGER.warning(
+                        "Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s",
+                        attempt,
+                        max_attempts,
+                        delay,
+                        err,
+                    )
                     await asyncio.sleep(delay)
                 else:
-                    _LOGGER.error("Could not connect to Suez API after %d attempts.", max_attempts)
-                    raise ConfigEntryError("Failed to connect to Suez API after multiple retries") from err
+                    _LOGGER.warning(
+                        "Could not connect to Suez API after %d attempts: %s. Marking config entry as not ready (retry scheduled).",
+                        max_attempts,
+                        err,
+                    )
+                    raise ConfigEntryNotReady(f"Failed to connect to Suez API: {err}") from err
 
     async def _async_update_data(self) -> SuezWaterData:
         """Fetch data from API endpoint."""
