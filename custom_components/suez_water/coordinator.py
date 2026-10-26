@@ -130,10 +130,25 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             f"{DOMAIN}:{self._counter_id}_water_consumption_statistics"
         )
 
+    async def _safe_close_session(self) -> None:
+        """Safely close suez session without blocking or raising on logout errors."""
+        try:
+            # Shield or short timeout to avoid getting cancelled or hung during logout
+            async with asyncio.timeout(5):
+                await self._suez_client.close_session()
+        except (Exception, asyncio.CancelledError) as err:
+            _LOGGER.debug("Non-critical error while closing session: %s", err)
+            # Ensure session is reset even if logout failed
+            try:
+                if getattr(self._suez_client, "_session", None) is not None:
+                    await self._suez_client._session.close()
+            except Exception:
+                pass
+            self._suez_client._session = None
+
     async def _async_setup(self) -> None:
         """Check credentials with a retry mechanism."""
         max_attempts = 3
-        last_exception = None
         for attempt in range(1, max_attempts + 1):
             try:
                 # Direct check via _connect to preserve original exception details
@@ -142,9 +157,13 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                     _LOGGER.debug("Successfully connected to Suez API.")
                     return
                 finally:
-                    await self._suez_client.close_session()
+                    await self._safe_close_session()
+            except ConfigEntryAuthFailed:
+                raise
+            except asyncio.CancelledError:
+                _LOGGER.warning("Setup of Suez Water coordinator was cancelled.")
+                raise
             except Exception as err:
-                last_exception = err
                 err_str = str(err)
                 # Check for explicit invalid credentials message from pySuez
                 if "check your username/password" in err_str.lower() or "401" in err_str:
