@@ -172,22 +172,50 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                     _LOGGER.error("Suez authentication rejected: %s", err)
                     raise ConfigEntryAuthFailed("Invalid credentials for suez water") from err
 
+                is_maintenance_or_timeout = any(
+                    k in err_str.lower()
+                    for k in (
+                        "timeout",
+                        "timed out",
+                        "502",
+                        "503",
+                        "504",
+                        "temporarily unavailable",
+                        "maintenance",
+                    )
+                )
+
                 if attempt < max_attempts:
                     delay = 5 * attempt
-                    _LOGGER.warning(
-                        "Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s",
-                        attempt,
-                        max_attempts,
-                        delay,
-                        err,
-                    )
+                    if is_maintenance_or_timeout:
+                        _LOGGER.warning(
+                            "Suez portal seems down or in maintenance (%s). Retry %d/%d in %ds.",
+                            err,
+                            attempt,
+                            max_attempts,
+                            delay,
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "Connection to Suez API failed (attempt %d/%d), retrying in %d seconds: %s",
+                            attempt,
+                            max_attempts,
+                            delay,
+                            err,
+                        )
                     await asyncio.sleep(delay)
                 else:
-                    _LOGGER.warning(
-                        "Could not connect to Suez API after %d attempts: %s. Marking config entry as not ready (retry scheduled).",
-                        max_attempts,
-                        err,
-                    )
+                    if is_maintenance_or_timeout:
+                        _LOGGER.warning(
+                            "Suez portal is currently unavailable (maintenance/timeout: %s). Home Assistant will retry automatically.",
+                            err,
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "Could not connect to Suez API after %d attempts: %s. Marking config entry as not ready (retry scheduled).",
+                            max_attempts,
+                            err,
+                        )
                     raise ConfigEntryNotReady(f"Failed to connect to Suez API: {err}") from err
 
     async def _async_update_data(self) -> SuezWaterData:
