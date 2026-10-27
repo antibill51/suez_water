@@ -3,34 +3,38 @@
     "step": {
       "user": {
         "data": {
-          "counter_id": "Meter ID",
+          "counter_id": "Counter ID",
+          "commune_code": "Commune INSEE code (or postal code)",
           "commune_price_url": "Commune price page URL"
         },
         "data_description": {
-          "username": "Enter your login associated with your {tout_sur_mon_eau} account",
+          "username": "Enter your username associated with your {tout_sur_mon_eau} account",
           "password": "Enter your password associated with your {tout_sur_mon_eau} account",
-          "counter_id": "Enter your meter ID (ex: 12345678). Should be found automatically during setup, if not see integration documentation for more information",
-          "commune_price_url": "Public Suez/Tout sur mon eau URL of your commune (ex: https://rhoneventoux.toutsurmoneau.fr/eau-dans-ma-commune/sorgues-84129/prix-de-l-eau) to automatically scrape subscription fees and tariffs."
+          "counter_id": "Enter your counter ID (e.g., 12345678). It should be automatically detected during setup; otherwise refer to the documentation",
+          "commune_code": "INSEE code (5 digits) or postal code of your commune to ensure water quality and pricing can be resolved even if Suez does not return INSEE.",
+          "commune_price_url": "Public Suez/Tout sur mon eau URL of your commune (e.g., https://rhoneventoux.toutsurmoneau.fr/eau-dans-ma-commune/sorgues-84129/prix-de-l-eau) to automatically fetch subscriptions and prices."
         },
-        "description": "Connect your Suez Water {tout_sur_mon_eau} account to retrieve your water consumption"
+        "description": "Connect your Suez Water {tout_sur_mon_eau} account to track your water consumption"
       }
     },
     "error": {
-      "counter_not_found": "Could not find the meter ID automatically. Please check the integration documentation to find it manually."
+      "counter_not_found": "Could not find your counter ID automatically. Please refer to the documentation to find it manually."
     }
   },
   "options": {
     "step": {
       "init": {
         "data": {
+          "commune_code": "Commune INSEE code (saved automatically)",
           "commune_price_url": "Commune price page URL",
-          "yearly_subscription": "Fallback fixed yearly subscription (€ / year, if no URL)",
-          "price_override": "Custom water price per m³ (€ / m³, leave 0 for automatic)"
+          "yearly_subscription": "Fallback fixed yearly subscription (€ / yr, if no URL)",
+          "price_override": "Custom m³ price override (€ / m³, leave 0 for automatic)"
         },
         "data_description": {
-          "commune_price_url": "Public Suez/Tout sur mon eau URL of your commune (ex: https://rhoneventoux.toutsurmoneau.fr/eau-dans-ma-commune/sorgues-84129/prix-de-l-eau) to automatically retrieve water & sanitation subscription costs.",
-          "yearly_subscription": "Fallback total annual fixed subscription cost if no commune URL is provided.",
-          "price_override": "Manually override volumetric price per m³ if Suez API returns incorrect data."
+          "commune_code": "INSEE code (5 digits) used for Hub'Eau (water quality) and Suez commune discovery. Populated automatically when discovered.",
+          "commune_price_url": "Public Suez/Tout sur mon eau URL of your commune to automatically fetch water and sanitation subscriptions.",
+          "yearly_subscription": "Fallback total yearly fixed subscription cost if no commune URL is set.",
+          "price_override": "Allows manually overriding m³ price if Suez API returns incorrect data."
         }
       }
     }
@@ -38,7 +42,7 @@
   "entity": {
     "sensor": {
       "water_usage_yesterday": {
-        "name": "Water usage yesterday"
+        "name": "Yesterday water consumption"
       },
       "last_update_attempt": {
         "name": "Last update attempt"
@@ -59,7 +63,7 @@
         "name": "Yesterday total cost"
       },
       "water_quality_status": {
-        "name": "Water quality - Overall status"
+        "name": "Water quality - Global status"
       },
       "water_ph": {
         "name": "Water quality - pH"
@@ -110,7 +114,7 @@
         "name": "Water quality - Conductivity"
       },
       "water_pesticides_total": {
-        "name": "Water quality - Pesticides (12-month summary)"
+        "name": "Water quality - Pesticides"
       }
     }
   }

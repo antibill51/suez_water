@@ -20,6 +20,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
+    CONF_COMMUNE_CODE,
     CONF_COMMUNE_PRICE_URL,
     CONF_COUNTER_ID,
     CONF_PRICE_OVERRIDE,
@@ -35,6 +36,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
         vol.Optional(CONF_COUNTER_ID): str,
         vol.Optional(CONF_COMMUNE_PRICE_URL): str,
+        vol.Optional(CONF_COMMUNE_CODE): str,
     }
 )
 
@@ -208,8 +210,16 @@ class SuezWaterOptionsFlow(OptionsFlow):
             CONF_COMMUNE_PRICE_URL,
             self.config_entry.data.get(CONF_COMMUNE_PRICE_URL, ""),
         )
+        default_commune_code = options.get(
+            CONF_COMMUNE_CODE,
+            self.config_entry.data.get(CONF_COMMUNE_CODE, ""),
+        )
         data_schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_COMMUNE_CODE,
+                    default=default_commune_code,
+                ): str,
                 vol.Optional(
                     CONF_COMMUNE_PRICE_URL,
                     default=default_url,

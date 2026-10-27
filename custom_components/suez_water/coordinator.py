@@ -5,6 +5,7 @@ import calendar
 import logging
 import re
 import unicodedata
+import urllib.parse
 
 from bs4 import BeautifulSoup
 from pysuez import PySuezError, SuezClient, TelemetryMeasure
@@ -33,6 +34,7 @@ from homeassistant.util.unit_conversion import VolumeConverter
 import homeassistant.util.dt as dt_util
 
 from .const import (
+    CONF_COMMUNE_CODE,
     CONF_COMMUNE_PRICE_URL,
     CONF_COUNTER_ID,
     CONF_PRICE_OVERRIDE,
@@ -195,13 +197,16 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             return {str(key): value for key, value in param.items()}
 
         aggregated = None
+        aggregated_error: Exception | None = None
         try:
             aggregated = await self._suez_client.fetch_aggregated_data()
             _LOGGER.info("Fetched aggregated data: %s", aggregated)
         except PySuezError as err:
-            if "503" in str(err) or "500" in str(err) or "502" in str(err):
-                raise UpdateFailed(f"Suez service unavailable ({err})") from err
+            aggregated_error = err
             _LOGGER.warning("Could not fetch aggregated data: %s", err)
+        except Exception as err:
+            aggregated_error = err
+            _LOGGER.warning("Unexpected error fetching aggregated data: %s", err)
 
         # 1. Automatic commune pricing & subscriptions
         commune_url = self.config_entry.options.get(
@@ -239,8 +244,8 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 price_data = await self._suez_client.get_price()
                 price = price_data.price
                 _LOGGER.info("Fetched water price from API: %s €/m³", price)
-            except PySuezError as err:
-                _LOGGER.warning("Failed to fetch water price from API: %s", err)
+            except Exception as err:
+                _LOGGER.warning("Failed to fetch water price from Suez API: %s", err)
                 if commune_prices and commune_prices.get("total_price_m3"):
                     price = commune_prices["total_price_m3"]
                     _LOGGER.info("Using water price fallback from commune page: %s €/m³", price)
@@ -272,6 +277,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             _LOGGER.debug("Incremental update since %s (overlap: %s)", earliest_date, fetch_since)
 
         daily_usage = []
+        daily_usage_error: Exception | None = None
         try:
             daily_usage = await self._suez_client.fetch_all_daily_data(
                 since=fetch_since
@@ -279,9 +285,19 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             _LOGGER.info("Fetched %d daily usage entries.", len(daily_usage))
             _LOGGER.debug("Fetched daily usage data: %s", daily_usage)
         except PySuezError as err:
-            if "503" in str(err) or "500" in str(err):
-                raise UpdateFailed(f"Failed to fetch daily suez water data: {err}") from err
+            daily_usage_error = err
             _LOGGER.warning("Failed to fetch daily usage: %s", err)
+        except Exception as err:
+            daily_usage_error = err
+            _LOGGER.warning("Unexpected error fetching daily usage: %s", err)
+
+        # Fail the update coordinator only if NO useful data could be fetched and no previous data exists
+        if aggregated is None and not daily_usage:
+            # Check if this is an initial fetch without any prior cache
+            if self.data is None:
+                err_msg = daily_usage_error or aggregated_error or "Suez service unavailable"
+                raise UpdateFailed(f"Failed to fetch data from Suez API: {err_msg}")
+            _LOGGER.warning("Both aggregated and daily usage calls failed; retaining previous state to avoid marking entities unavailable.")
 
         # 4. Update statistics
         if not daily_usage or not any(m.index is not None for m in daily_usage):
@@ -290,7 +306,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             try:
                 await self._async_update_statistics(price, daily_usage, water_last_stat, cost_last_stat)
             except Exception as err:
-                raise UpdateFailed("Failed to update suez water statistics") from err
+                _LOGGER.error("Error updating suez water statistics (non-fatal): %s", err)
 
         if daily_usage:
             daily_usage.sort(key=lambda m: m.date)
@@ -691,15 +707,27 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             _LOGGER.warning("Error fetching commune prices from %s: %s", url, err)
             return None
 
-    async def _async_discover_commune_price_url(self) -> str | None:
-        """Attempt to automatically discover the commune price URL from Suez contract and meter data."""
+    async def _async_get_brand_url(self) -> str:
+        """Get brand website URL from contract or default to toutsurmoneau.fr."""
         try:
             contract = await self._suez_client.contract_data()
-            insee = str(contract.inseeCode) if contract and getattr(contract, "inseeCode", None) else None
             brand_url = getattr(contract, "website_link", None) or "https://www.toutsurmoneau.fr"
             if not brand_url.startswith("http"):
                 brand_url = f"https://{brand_url}"
-            brand_url = brand_url.rstrip("/")
+            return brand_url.rstrip("/")
+        except Exception:
+            return "https://www.toutsurmoneau.fr"
+
+    async def _async_discover_commune_price_url(self) -> str | None:
+        """Attempt to automatically discover the commune price URL from Suez contract and meter data."""
+        try:
+            brand_url = await self._async_get_brand_url()
+            insee = await self._async_get_insee_code()
+            contract = None
+            try:
+                contract = await self._suez_client.contract_data()
+            except Exception:
+                pass
 
             city = None
             try:
@@ -755,15 +783,98 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             _LOGGER.debug("Could not automatically discover commune pricing URL: %s", err)
             return None
 
+    async def _async_resolve_insee_from_geo(self, city: str | None, postal_code: str | None) -> str | None:
+        """Resolve INSEE code via geo.api.gouv.fr fallback when Suez does not provide it."""
+        if not city and not postal_code:
+            return None
+        session = async_get_clientsession(self.hass)
+        try:
+            params = {}
+            if postal_code:
+                params["codePostal"] = postal_code
+            if city:
+                params["nom"] = city
+            params["limit"] = "1"
+            url = f"https://geo.api.gouv.fr/communes?{urllib.parse.urlencode(params)}"
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if data and len(data) > 0 and data[0].get("code"):
+                        insee = str(data[0]["code"])
+                        _LOGGER.info("Resolved INSEE code %s via geo.api.gouv.fr (city=%s, cp=%s)", insee, city, postal_code)
+                        return insee
+        except Exception as err:
+            _LOGGER.debug("Could not resolve INSEE code from geo.api.gouv.fr: %s", err)
+        return None
+
     async def _async_get_insee_code(self) -> str | None:
-        """Get INSEE code from contract or options."""
+        """Get INSEE code from options, contract, or geo.api.gouv.fr fallback."""
+        # 1. Configured option / stored code
+        configured = self.config_entry.options.get(
+            CONF_COMMUNE_CODE,
+            self.config_entry.data.get(CONF_COMMUNE_CODE)
+        )
+        if configured:
+            val = str(configured).strip()
+            if len(val) == 5 and val.isdigit():
+                return val
+
+        # 2. Suez contract data
+        contract = None
         try:
             contract = await self._suez_client.contract_data()
             if contract and getattr(contract, "inseeCode", None):
-                return str(contract.inseeCode)
+                insee = str(contract.inseeCode).strip()
+                if insee:
+                    await self._async_store_commune_code(insee)
+                    return insee
         except Exception:
             pass
+
+        # 3. Fallback: resolve from address / meter city using geo.api.gouv.fr
+        city = None
+        postal_code = None
+        if contract and getattr(contract, "addrServed", None):
+            addr = contract.addrServed
+            m_cp = re.search(r"(\d{5})", addr)
+            if m_cp:
+                postal_code = m_cp.group(1)
+            parts = addr.split(",")
+            if parts:
+                city = parts[-1].strip()
+                city = re.sub(r"^\d{5}\s*", "", city).strip()
+
+        if not city:
+            try:
+                meters = await self._suez_client.get_meters()
+                if (
+                    meters
+                    and getattr(meters, "content", None)
+                    and getattr(meters.content, "clientCompteursPro", None)
+                    and len(meters.content.clientCompteursPro) > 0
+                    and getattr(meters.content.clientCompteursPro[0], "compteursPro", None)
+                    and len(meters.content.clientCompteursPro[0].compteursPro) > 0
+                ):
+                    city = getattr(meters.content.clientCompteursPro[0].compteursPro[0], "villeDesserte", None)
+            except Exception:
+                pass
+
+        resolved = await self._async_resolve_insee_from_geo(city, postal_code)
+        if resolved:
+            await self._async_store_commune_code(resolved)
+            return resolved
+
         return None
+
+    async def _async_store_commune_code(self, insee_code: str) -> None:
+        """Persist discovered commune INSEE code into config entry options."""
+        if not insee_code or not insee_code.isdigit() or len(insee_code) != 5:
+            return
+        current_option = self.config_entry.options.get(CONF_COMMUNE_CODE)
+        if current_option != insee_code:
+            new_options = {**self.config_entry.options, CONF_COMMUNE_CODE: insee_code}
+            self.hass.config_entries.async_update_entry(self.config_entry, options=new_options)
+            _LOGGER.info("Persisted commune INSEE code %s in entry options.", insee_code)
 
     async def _async_discover_commune_quality_url(self) -> str | None:
         """Automatically discover the public Tout sur mon eau commune quality page URL."""
@@ -774,7 +885,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             city = None
 
             try:
-                meters = await self._suez_client.meter_data()
+                meters = await self._suez_client.get_meters()
                 if (
                     meters
                     and meters.content
