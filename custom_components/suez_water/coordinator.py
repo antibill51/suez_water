@@ -149,19 +149,30 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
             self._suez_client._session = None
 
     async def _async_setup(self) -> None:
-        """Check credentials with a retry mechanism."""
-        max_attempts = 3
+        """Check credentials with a retry mechanism and bounded timeout."""
+        max_attempts = 2
         for attempt in range(1, max_attempts + 1):
             try:
-                # Direct check via _connect to preserve original exception details
+                # Direct check via _connect bounded by a strict 20s timeout
                 try:
-                    await self._suez_client._connect()
+                    async with asyncio.timeout(20):
+                        await self._suez_client._connect()
                     _LOGGER.debug("Successfully connected to Suez API.")
                     return
                 finally:
                     await self._safe_close_session()
             except ConfigEntryAuthFailed:
                 raise
+            except (TimeoutError, asyncio.TimeoutError) as err:
+                _LOGGER.warning(
+                    "Timeout connecting to Suez API (attempt %d/%d): %s",
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                if attempt >= max_attempts:
+                    raise ConfigEntryNotReady(f"Timeout connecting to Suez API: {err}") from err
+                await asyncio.sleep(3)
             except asyncio.CancelledError:
                 _LOGGER.warning("Setup of Suez Water coordinator was cancelled.")
                 raise
@@ -186,7 +197,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator[SuezWaterData]):
                 )
 
                 if attempt < max_attempts:
-                    delay = 5 * attempt
+                    delay = 3 * attempt
                     if is_maintenance_or_timeout:
                         _LOGGER.warning(
                             "Suez portal seems down or in maintenance (%s). Retry %d/%d in %ds.",
